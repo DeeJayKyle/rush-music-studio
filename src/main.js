@@ -75,17 +75,9 @@ function updateLen() { const e = projectEndBeats(); $('#statusLen').textContent 
 
 // ---- menus ------------------------------------------------------------------------
 const MENUS = {
-  file: () => [
-    { label: 'New project', key: 'Ctrl+N', action: newProjectFlow },
-    { label: 'Open project…', key: 'Ctrl+O', action: () => $('#projInput').click() },
-    { label: 'Save project', key: 'Ctrl+S', action: () => Project.save() },
-    '-',
-    { label: 'Import audio…', key: 'Ctrl+I', action: () => $('#fileInput').click() },
-    { label: 'Export mix as WAV…', key: 'Ctrl+E', action: exportMix },
-    { label: 'Export mix to Media (bounce)', action: () => exportMix(true) },
-    '-',
-    { label: 'Restore last autosave', action: restoreAutosave },
-  ],
+  file: () => SHELL_MENUS.file(),
+  view: () => SHELL_MENUS.view(),
+  options: () => SHELL_MENUS.options(),
   edit: () => S.view === 'editor' ? [
     { label: 'Undo', key: 'Ctrl+Z', action: Editor.ops.undo }, { label: 'Redo', key: 'Ctrl+Y', action: Editor.ops.redo }, '-', ...Editor.editMenuItems(),
   ] : [
@@ -129,8 +121,10 @@ function showShortcuts() {
     ['Transport', [['Space', 'Play / pause'], ['Home / End', 'Start / end of project'], ['R', 'Record'], ['L', 'Loop on/off'], ['C', 'Metronome'], ['[  ]', 'Tempo −/+ 0.1 BPM (Shift: 1 BPM)'], ['Ctrl+G', 'Go to bar or time']]],
     ['Navigate', [['← →', 'Move cursor by snap (Shift: by bar)'], ['Ctrl+← / Ctrl+→', 'Previous / next marker or tempo change'], [', .', 'Previous / next marker or tempo change'], ['Tab / Shift+Tab', 'Next / previous clip'], ['↑ ↓', 'Zoom in / out'], ['Ctrl+↑ / Ctrl+↓', 'Taller / shorter tracks'], ['F', 'Fit whole project'], ['Z', 'Zoom to selected clip or loop'], ['PgUp / PgDn', 'Page left / right']]],
     ['Mouse & touchpad', [['Wheel', 'Scroll tracks'], ['Shift+wheel / swipe', 'Scroll left / right'], ['Ctrl+wheel / pinch', 'Zoom'], ['Alt+wheel', 'Track height'], ['Middle-drag', 'Pan'], ['Overview strip', 'Click or drag to jump'], ['Double-click ruler', 'Loop that bar'], ['Double-click tempo lane', 'Add tempo change']]],
-    ['Edit', [['Double-click clip / Alt+Enter', 'Clip properties (tempo, beat grid, pitch)'], ['Shift+↑ / Shift+↓', 'Clip pitch ±1 semitone'], ['T / Shift+T', 'Insert / edit tempo change'], ['M', 'Insert marker'], ['E / Shift+E', 'Clip effects / track effects'], ['X / Shift+X', 'Crossfade clip / all overlaps'], ['S', 'Split'], ['Ctrl+C X V', 'Copy, cut, paste clip'], ['Ctrl+D', 'Duplicate clip'], ['Alt+← →', 'Nudge clip'], ['Alt-drag', 'Copy clip'], ['Shift-drag', 'Ignore snap'], ['V / P', 'Volume / pan envelope'], ['Del', 'Delete clip']]],
-    ['App', [['1 2 3 4', 'Arrange, Editor, Stems, Mixer'], ['Ctrl+K', 'Effects chain'], ['Ctrl+S / Ctrl+O', 'Save / open'], ['Ctrl+I', 'Import audio'], ['Ctrl+E', 'Export mix'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['?', 'This list']]],
+    ['Edit', [['Double-click clip / Alt+Enter', 'Clip properties (tempo, beat grid, pitch)'], ['Shift+↑ / Shift+↓', 'Clip pitch ±1 semitone'], ['T / Shift+T', 'Insert / edit tempo change'], ['M', 'Insert marker'], ['E / Shift+E', 'Clip effects / track effects'], ['X / Shift+X', 'Crossfade clip / all overlaps'], ['S', 'Split'], ['Ctrl+C X V', 'Copy, cut, paste clip'], ['Ctrl+D', 'Duplicate clip'], ['Alt+← →', 'Nudge clip'], ['Alt-drag', 'Copy clip'], ['Shift-drag', 'Ignore snap'], ['V / P', 'Volume / pan envelope'], ['Shift+R', 'Reverse clip'], ['Shift+Q', 'Track EQ'], ['Del', 'Delete clip']]],
+    ['Tools & options', [['A', 'Edit tool'], ['D', 'Draw tool'], ['G', 'Envelope tool'], ['I', 'Time selection tool'], ['U', 'Erase tool'], ['F8', 'Snapping on/off'], ['Ctrl+L', 'Ripple edits'], ['Ctrl+Shift+X', 'Automatic crossfades'], ['Shift+B', 'Bypass all effects']]],
+    ['Explorer', [['Alt+1 / Alt+2', 'Media / Explorer'], ['↑ ↓', 'Select file (auto-preview)'], ['Enter', 'Add to mix'], ['Shift+Enter', 'Import only'], ['Space', 'Preview / stop'], ['← →', 'Skip 10 s · folder up / open'], ['Backspace', 'Up a folder']]],
+    ['App', [['1 2 3 4', 'Arrange, Editor, Stems, Mixer'], ['Ctrl+K', 'Effects chain'], ['Ctrl+S / Ctrl+O', 'Save / open'], ['Ctrl+Shift+S', 'Save as'], ['Ctrl+N', 'New project'], ['Alt+Enter', 'Project properties (no clip selected)'], ['Ctrl+,', 'Preferences'], ['Ctrl+B', 'Show / hide library'], ['Ctrl+I', 'Import audio'], ['Ctrl+E', 'Export mix'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['?', 'This list']]],
   ];
   const bg = el('div', { class: 'modal-bg' });
   const close = () => { bg.remove(); document.removeEventListener('keydown', esc, true); };
@@ -148,34 +142,6 @@ function showShortcutsOld() {
 }
 function showAbout() {
   showDialog({ title: 'Rush Music Studio', cancel: null, ok: 'Close', desc: 'An offline, open-source studio: a loop-based multitrack arranger with envelopes and markers, a sample-accurate audio editor with markers and regions, ' + Object.keys(Plugins.REG).length + ' original real-time plugins with a Plug-in Chainer, a real-time four-stem separator and a mixer. No licence key, no account, no internet needed. DSP runs on ' + Pool.size + ' background threads on this machine. Released under the MIT licence.' });
-}
-async function newProjectFlow() {
-  if (S.dirty && !(await confirmDialog('Start a new project?', 'Unsaved changes in the current project will be lost.', 'New project', true))) return;
-  Engine.halt(); Deck.unload();
-  P = newProject(); S.assets.clear(); Hist.undo = []; Hist.redo = [];
-  $('#bpmInput').value = P.bpm; $('#projName').value = P.name; $('#bpbSel').value = P.bpb; $('#snapSel').value = P.snap;
-  Engine.syncTracks(); bus.emit('assets'); bus.emit('project'); bus.emit('transport');
-  S.dirty = false; $('#statusSave').textContent = 'New project';
-}
-async function exportMix(toMedia) {
-  if (!projectEndBeats()) { toast('The arrangement is empty. Add clips before exporting.', 'err'); return; }
-  let opts = { bits: '24', range: 'all', tail: true };
-  if (toMedia !== true) {
-    const r = await showDialog({ title: 'Export mix', desc: 'Renders faster than real time, with every effect and the master limiter applied.', ok: 'Export WAV', fields: [
-      { id: 'range', label: 'Range', type: 'select', value: P.loop.end > P.loop.start && P.loop.on ? 'loop' : 'all', options: [{ value: 'all', label: 'Whole project' }, { value: 'loop', label: 'Loop region only' }] },
-      { id: 'bits', label: 'Bit depth', type: 'select', value: '24', options: [{ value: '16', label: '16-bit PCM (CD)' }, { value: '24', label: '24-bit PCM' }, { value: '32', label: '32-bit float' }] },
-      { id: 'tail', label: 'Include reverb/echo tail (2 s)', type: 'check', value: true }] });
-    if (!r) return; opts = r;
-  }
-  const t0 = performance.now();
-  status('Rendering mix…');
-  try {
-    const buf = await Engine.render(opts.range === 'loop' ? { fromBeat: P.loop.start, toBeat: P.loop.end, tail: opts.tail ? 2 : 0 } : { tail: opts.tail ? 2 : 0 });
-    const secs = (performance.now() - t0) / 1000;
-    if (toMedia === true) { addAsset(P.name + ' (mix)', buf, { bpm: P.bpm, beats: buf.duration * P.bpm / 60 }); toast('Bounced mix to Media', 'ok'); }
-    else downloadBlob(encodeWav(bufferChannels(buf), buf.sampleRate, +opts.bits), safeName(P.name) + '.wav');
-    status('Rendered ' + fmtShort(buf.duration) + ' in ' + secs.toFixed(1) + ' s (' + (buf.duration / secs).toFixed(0) + '× real-time)');
-  } catch (e) { toast(e.message, 'err'); status('Export failed'); }
 }
 async function restoreAutosave() {
   const s = await Autosave.get();
@@ -285,8 +251,17 @@ function onKey(e) {
   if (tag === 'input' && !['range', 'checkbox', 'button'].includes(e.target.type)) return;
   if (tag === 'select' || tag === 'textarea' || document.querySelector('.modal-bg')) return;
   const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
-  if (mod && k === 's') { e.preventDefault(); Project.save(); return; }
-  if (mod && k === 'o') { e.preventDefault(); $('#projInput').click(); return; }
+  if (mod && k === 's') { e.preventDefault(); FileIO.save(e.shiftKey); return; }
+  if (mod && k === 'o') { e.preventDefault(); FileIO.open(); return; }
+  if (mod && e.key === ',') { e.preventDefault(); showPrefs(); return; }
+  if (mod && k === 'b') { e.preventDefault(); toggleView('showLibrary'); return; }
+  if (e.key === 'F8') { e.preventDefault(); toggleSnap(); return; }
+  if (e.altKey && !mod && (e.key === '1' || e.code === 'Digit1')) { e.preventDefault(); setSideTab('media'); return; }
+  if (e.altKey && !mod && (e.key === '2' || e.code === 'Digit2')) { e.preventDefault(); setSideTab('explorer'); return; }
+  if (e.altKey && e.key === 'Enter' && !(S.view === 'arrange' && Arrange.selected())) { e.preventDefault(); projectProps(false).then((r) => r && applyProps(r)); return; }
+  if (!mod && e.shiftKey && k === 'b') { e.preventDefault(); toggleBypass(); return; }
+  if (mod && k === 'l' && !e.shiftKey) { e.preventDefault(); PREF.ripple = !PREF.ripple; savePrefs(); status(PREF.ripple ? 'Ripple on: later clips follow your edits' : 'Ripple off'); return; }
+  if (mod && e.shiftKey && k === 'x') { e.preventDefault(); PREF.autoXfade = !PREF.autoXfade; savePrefs(); status(PREF.autoXfade ? 'Automatic crossfades on' : 'Automatic crossfades off'); return; }
   if (mod && k === 'i') { e.preventDefault(); $('#fileInput').click(); return; }
   if (mod && k === 'e') { e.preventDefault(); exportMix(); return; }
   if (mod && k === 'n') { e.preventDefault(); newProjectFlow(); return; }
@@ -298,7 +273,7 @@ function onKey(e) {
   if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); Hist.doUndo(); return; }
   if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); Hist.doRedo(); return; }
   if (k === 'home') { Arrange.setCursor(0); $('#tlScroll').scrollLeft = 0; return; }
-  if (!mod && k === 'r') { if (Engine.recording) Engine.pause(); else Engine.startRecord(); return; }
+  if (!mod && !e.shiftKey && k === 'r') { if (Engine.recording) Engine.pause(); else Engine.startRecord(); return; }
   if (!mod && k === 'l') { toggleLoop(); return; }
   if (!mod && k === 'c' && S.view === 'arrange') { P.metro = !P.metro; bus.emit('transport'); status(P.metro ? 'Metronome on' : 'Metronome off'); return; }
   if (!mod && (e.key === '[' || e.key === ']' || e.key === '{' || e.key === '}')) { e.preventDefault(); nudgeTempo((e.key === ']' || e.key === '}' ? 1 : -1) * (e.shiftKey ? 1 : 0.1)); return; }
@@ -370,6 +345,7 @@ async function boot() {
   Pool.init();
   Arrange.init(); Editor.init(); Deck.init(); Mixer.init();
   bindShell();
+  initShell();
   applyTheme(theme);
   bus.on('assets', renderPool);
   bus.on('project', () => { updateLen(); updateTransportUI(); });

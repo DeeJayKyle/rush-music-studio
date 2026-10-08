@@ -328,10 +328,12 @@ const Plugins = (() => {
   function instance(type, params) { return { id: uid('fx'), type, on: true, params: Object.assign(defaults(type), params || {}) }; }
   function list() { return CATS.map((c) => ({ cat: c, items: Object.values(REG).filter((d) => d.cat === c) })); }
 
+  let bypassAll = false;   // Options › Bypass all effects (live playback only)
   class Chain {
-    constructor(ctx) { this.ctx = ctx; this.input = G(ctx); this.output = G(ctx); this.nodes = []; this.sig = null; this.input.connect(this.output); }
+    constructor(ctx, live = true) { this.ctx = ctx; this.live = live && !(typeof OfflineAudioContext !== 'undefined' && ctx instanceof OfflineAudioContext); this.input = G(ctx); this.output = G(ctx); this.nodes = []; this.sig = null; this.fx = []; this.input.connect(this.output); }
     set(fx) {
-      fx = (fx || []).filter((f) => REG[f.type]);
+      this.fx = fx;
+      fx = this.live && bypassAll ? [] : (fx || []).filter((f) => REG[f.type]);
       const sig = fx.map((f) => f.id + (f.on ? '1' : '0')).join('|');
       if (sig !== this.sig) {
         this.sig = sig;
@@ -356,7 +358,7 @@ const Plugins = (() => {
     const n = chs[0].length, nch = chs.length, len = n + Math.round(tail * sr);
     const oc = new OfflineAudioContext(2, len, sr);
     const src = oc.createBufferSource(); src.buffer = makeBuffer(chs, sr);
-    const ch = new Chain(oc); ch.set(fx);
+    const ch = new Chain(oc, false); ch.set(fx);
     src.connect(ch.input); ch.output.connect(oc.destination); src.start();
     const r = await oc.startRendering();
     return Array.from({ length: nch }, (_, c) => r.getChannelData(Math.min(c, 1)).slice(0, len));
@@ -369,5 +371,5 @@ const Plugins = (() => {
   function savePreset(type, name, params) { const u = loadUser(); (u[type] = u[type] || {})[name] = params; saveUser(u); }
   function deletePreset(type, name) { const u = loadUser(); if (u[type]) { delete u[type][name]; saveUser(u); } }
 
-  return { REG, CATS, Chain, render, instance, defaults, list, presets, savePreset, deletePreset };
+  return { get bypassAll() { return bypassAll; }, set bypassAll(v) { bypassAll = !!v; }, REG, CATS, Chain, render, instance, defaults, list, presets, savePreset, deletePreset };
 })();

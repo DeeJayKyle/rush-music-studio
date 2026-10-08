@@ -78,7 +78,9 @@ function showMenu(x, y, items, anchor) {
   for (const it of items) {
     if (it === '-') { m.append(el('hr')); continue; }
     if (it.label && it.header) { m.append(el('div', { class: 'mlabel' }, it.label)); continue; }
-    const b = el('button', { role: 'menuitem', disabled: it.disabled ? true : null }, el('span', {}, it.label), it.key ? el('kbd', {}, it.key) : null);
+    const b = el('button', { role: it.checked != null ? 'menuitemcheckbox' : 'menuitem', 'aria-checked': it.checked != null ? String(!!it.checked) : null, disabled: it.disabled ? true : null },
+      it.checked != null ? el('span', { class: 'mchk' }, it.checked ? '✓' : '') : null, el('span', {}, it.label), it.key ? el('kbd', {}, it.key) : null);
+    if (it.sub) { b.append(el('kbd', {}, '›')); b.addEventListener('click', (e) => { e.stopPropagation(); const r = b.getBoundingClientRect(); showMenu(r.right - 4, r.top, it.sub()); }); m.append(b); continue; }
     b.addEventListener('click', (e) => { e.stopPropagation(); closeMenu(); it.action && it.action(); });
     m.append(b);
   }
@@ -100,50 +102,69 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // ---- dialog (replaces prompt/confirm; works inside sandboxes) --------------
-function showDialog({ title, desc, fields = [], ok = 'Apply', cancel = 'Cancel', preview, danger }) {
+function showDialog({ title, desc, fields = [], ok = 'Apply', cancel = 'Cancel', preview, danger, wide, cls, extra, onChange, footerNote }) {
   return new Promise((resolve) => {
     const bg = el('div', { class: 'modal-bg' });
-    const form = el('form', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
-    const vals = {};
-    const fwrap = el('div', { class: 'fields' });
+    const form = el('form', { class: 'modal' + (wide ? ' wide' : '') + (cls ? ' ' + cls : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
+    const vals = {}, wraps = [], inputs = {};
+    const fwrap = el('div', { class: 'fields' + (wide ? ' cols' : '') });
+    const refresh = () => { for (const [f, w] of wraps) if (f.show) w.hidden = !f.show(vals); onChange && onChange(vals, api); };
+    const api = {
+      vals, form,
+      set(id, v) { vals[id] = v; const i = inputs[id]; if (!i) return; if (i.type === 'checkbox') i.checked = !!v; else i.value = v; if (i._out) i._out.textContent = i._fmt ? i._fmt(v) : v; },
+      note(t) { noteEl.textContent = t || ''; noteEl.hidden = !t; },
+    };
     for (const f of fields) {
       const id = 'dlg-' + f.id;
+      if (f.type === 'header') { const h = el('h4', { class: 'dlg-h' }, f.label); wraps.push([f, h]); fwrap.append(h); continue; }
+      if (f.type === 'html') { const h = el('div', { class: 'f full' }, f.node); wraps.push([f, h]); fwrap.append(h); continue; }
       vals[f.id] = f.value;
-      const wrap = el('div', { class: 'f' });
+      const wrap = el('div', { class: 'f' + (f.full ? ' full' : '') });
+      const onv = (v) => { vals[f.id] = v; refresh(); };
       if (f.type === 'range') {
         const out = el('output', {}, f.format ? f.format(f.value) : f.value);
         const inp = el('input', { type: 'range', id, min: f.min, max: f.max, step: f.step || 1, value: f.value });
-        inp.addEventListener('input', () => { vals[f.id] = parseFloat(inp.value); out.textContent = f.format ? f.format(vals[f.id]) : inp.value; });
-        wrap.append(el('label', { for: id }, f.label, out), inp);
+        inp._out = out; inp._fmt = f.format;
+        inp.addEventListener('input', () => { out.textContent = f.format ? f.format(parseFloat(inp.value)) : inp.value; onv(parseFloat(inp.value)); });
+        wrap.append(el('label', { for: id }, f.label, out), inp); inputs[f.id] = inp;
       } else if (f.type === 'select') {
         const sel = el('select', { id }, f.options.map((o) => el('option', { value: o.value ?? o, selected: (o.value ?? o) == f.value ? true : null }, o.label ?? o)));
-        sel.addEventListener('change', () => { vals[f.id] = sel.value; });
-        wrap.append(el('label', { for: id }, f.label), sel);
+        sel.addEventListener('change', () => onv(sel.value));
+        wrap.append(el('label', { for: id }, f.label), sel); inputs[f.id] = sel;
       } else if (f.type === 'check') {
         const cb = el('input', { type: 'checkbox', id, checked: f.value ? true : null });
-        cb.addEventListener('change', () => { vals[f.id] = cb.checked; });
-        wrap.append(el('label', { for: id, style: { justifyContent: 'flex-start', gap: '8px' } }, cb, f.label));
+        cb.addEventListener('change', () => onv(cb.checked));
+        wrap.append(el('label', { for: id, style: { justifyContent: 'flex-start', gap: '8px' } }, cb, f.label)); inputs[f.id] = cb;
+      } else if (f.type === 'textarea') {
+        const ta = el('textarea', { class: 'inp', id, rows: f.rows || 3 }); ta.value = f.value ?? '';
+        ta.addEventListener('input', () => onv(ta.value));
+        wrap.append(el('label', { for: id }, f.label), ta); inputs[f.id] = ta;
       } else {
-        const inp = el('input', { class: 'inp', id, type: f.type || 'text', value: f.value ?? '', min: f.min, max: f.max, step: f.step });
-        inp.addEventListener('input', () => { vals[f.id] = f.type === 'number' ? parseFloat(inp.value) : inp.value; });
-        wrap.append(el('label', { for: id }, f.label), inp);
+        const inp = el('input', { class: 'inp', id, type: f.type || 'text', value: f.value ?? '', min: f.min, max: f.max, step: f.step, placeholder: f.placeholder });
+        inp.addEventListener('input', () => onv(f.type === 'number' ? parseFloat(inp.value) : inp.value));
+        wrap.append(el('label', { for: id }, f.label), inp); inputs[f.id] = inp;
       }
+      if (f.hint) wrap.append(el('small', { class: 'f-hint' }, f.hint));
+      wraps.push([f, wrap]);
       fwrap.append(wrap);
     }
+    const noteEl = el('div', { class: 'dlg-note', hidden: true });
     const done = (v) => { bg.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
     const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } };
     document.addEventListener('keydown', onKey, true);
     const footer = el('footer', {},
-      preview ? el('button', { type: 'button', class: 'btn ghost', onclick: () => preview(vals) }, 'Preview') : null,
+      preview ? el('button', { type: 'button', class: 'btn ghost', onclick: () => preview(vals, api) }, 'Preview') : null,
+      ...(extra || []).map((x) => el('button', { type: 'button', class: 'btn ghost', onclick: () => x.action(vals, api) }, x.label)),
       el('div', { class: 'spacer' }),
       cancel ? el('button', { type: 'button', class: 'btn', onclick: () => done(null) }, cancel) : null,
       el('button', { type: 'submit', class: 'btn primary', style: danger ? { background: 'var(--rec)', color: '#fff' } : null }, ok));
-    form.append(el('header', {}, el('h3', {}, title), desc ? el('p', {}, desc) : null), fields.length ? fwrap : null, footer);
+    form.append(...[el('header', {}, el('h3', {}, title), desc ? el('p', {}, desc) : null), fields.length ? fwrap : null, noteEl, footerNote ? el('p', { class: 'dlg-foot' }, footerNote) : null, footer].filter(Boolean));
     form.addEventListener('submit', (e) => { e.preventDefault(); done({ ...vals }); });
     bg.addEventListener('pointerdown', (e) => { if (e.target === bg) done(null); });
     bg.append(form);
     document.body.append(bg);
-    const first = form.querySelector('input,select') || form.querySelector('button[type=submit]');
+    refresh();
+    const first = form.querySelector('input,select,textarea') || form.querySelector('button[type=submit]');
     first && first.focus();
   });
 }
@@ -206,6 +227,20 @@ function downloadBlob(blob, name) {
   const a = el('a', { href: URL.createObjectURL(blob), download: name });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+// save with a native "Save as" dialog when the platform offers one, otherwise download
+async function saveBlobAs(blob, name, desc, mime, ext) {
+  if (window.showSaveFilePicker && !saveBlobAs.blocked) {
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: desc, accept: { [mime]: [ext] } }] });
+      const w = await h.createWritable(); await w.write(blob); await w.close();
+      return h.name;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return null;
+      saveBlobAs.blocked = true;      // sandboxed pages: fall back to a download from now on
+    }
+  }
+  downloadBlob(blob, name); return name;
 }
 function safeName(s) { return (s || 'untitled').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'untitled'; }
 

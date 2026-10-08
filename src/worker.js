@@ -462,6 +462,10 @@ self.onmessage = (ev) => {
       result = denoise(m.ch, m.noise, m.sr, m.reduction, m.sensitivity); transfer = result.map((a) => a.buffer);
     } else if (m.type === 'spectrogram') {
       result = spectrogram(m.ch, m.sr, m.cols, m.rows); transfer = [result.data.buffer];
+    } else if (m.type === 'master') {
+      result = masterProcess(m); transfer = result.wav ? [result.wav] : result.chs.map((a) => a.buffer);
+    } else if (m.type === 'measure') {
+      result = { ...loudness(m.ch, m.sr), tp: truePeakDb(m.ch) };
     } else throw new Error('Unknown task ' + m.type);
     self.postMessage({ id, ok: true, result }, transfer);
   } catch (e) {

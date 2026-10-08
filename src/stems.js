@@ -12,8 +12,8 @@ const Deck = (() => {
 
   function graph() {
     const ctx = Engine.ensure(false);
-    if (D.g) return D.g;
-    const g = {};
+    if (D.g && D.g.ctx === ctx) return D.g;
+    const g = { ctx };
     g.bus = ctx.createGain();
     g.lp = ctx.createBiquadFilter(); g.lp.type = 'lowpass'; g.lp.frequency.value = 22000; g.lp.Q.value = 0.9;
     g.hp = ctx.createBiquadFilter(); g.hp.type = 'highpass'; g.hp.frequency.value = 10; g.hp.Q.value = 0.9;
@@ -323,5 +323,6 @@ const Deck = (() => {
     bus.on('assetMeta', (A) => { if (A === D.A) ui(); });
     fillSelect(); ui();
   }
-  return { init, load, unload, play, pause, draw, key, separate, get asset() { return D.A; }, get playing() { return D.playing; } };
+  function unloadAudio() { pause(); D.g = null; }
+  return { init, load, unload, unloadAudio, play, pause, draw, key, separate, get asset() { return D.A; }, get playing() { return D.playing; } };
 })();

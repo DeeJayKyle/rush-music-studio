@@ -10,7 +10,9 @@ const Arrange = (() => {
   let clipboard = null;
   const tl = () => $('#tl'), sc = () => $('#tlScroll');
 
+  let tool = 'edit';
   const snapBeat = (b, force) => {
+    if (typeof PREF !== 'undefined' && !PREF.snapOn) return b;
     const s = force != null ? force : P.snap;
     return s > 0 ? Math.round(b / s) * s : b;
   };
@@ -77,6 +79,7 @@ const Arrange = (() => {
   function trackMenu(t, i, x, y) {
     showMenu(x, y, [
       { label: 'Track effects…', key: 'Shift+E', action: () => Chainer.forTrack(t) },
+      { label: 'Track EQ…', key: 'Shift+Q', action: () => trackEqDialog(t) },
       { label: 'Transpose…', action: () => transpose(t) },
       '-',
       { label: (t.env && t.env.show === 'vol' ? '✓ ' : '') + 'Show volume envelope', key: 'V', action: () => showEnv(t, 'vol') },
@@ -356,11 +359,13 @@ const Arrange = (() => {
   function envY(k, v, y0, hh) { if (k === 'pan') return y0 + hh / 2 - v * hh / 2; const n = Math.sqrt(clamp((v + 60) / 66, 0, 1)); return y0 + hh - n * hh; }
   function envV(k, y, y0, hh) { const f = clamp((y0 + hh - y) / hh, 0, 1); if (k === 'pan') return clamp(f * 2 - 1, -1, 1); return Math.round((f * f * 66 - 60) * 10) / 10; }
   function envHit(x, y) {
-    const ti = trackAtY(y), t = P.tracks[ti]; if (!t || !t.env || !t.env.show) return null;
+    const ti = trackAtY(y), t = P.tracks[ti]; if (!t) return null;
+    if (tool === 'env' && (!t.env || !t.env.show)) { t.env = t.env || { vol: [], pan: [], show: null }; t.env.show = 'vol'; }
+    if (!t.env || !t.env.show) return null;
     const k = t.env.show, pts = t.env[k], y0 = ti * TH - sc().scrollTop + 4, hh = TH - 10;
     for (let i = 0; i < pts.length; i++) if (Math.abs(xOf(pts[i].b) - x) < 7 && Math.abs(envY(k, pts[i].v, y0, hh) - y) < 7) return { t, k, i, y0, hh };
     const ly = envY(k, envAt(pts, beatOf(x), 0), y0, hh);
-    if (Math.abs(ly - y) < 6) return { t, k, i: -1, y0, hh };
+    if (Math.abs(ly - y) < 6 || (tool === 'env' && y >= y0 - 2 && y <= y0 + hh + 2)) return { t, k, i: -1, y0, hh };
     return null;
   }
   // ---- hit testing ----
@@ -410,6 +415,23 @@ const Arrange = (() => {
       }
       const hh = hit(x, y);
       const b = beatOf(x);
+      if (tool === 'erase') {
+        if (hh && hh.clip) { Hist.push(); rippleRemove(hh.clip, hh.track); }
+        drag = { kind: 'erase', moved: true }; s.setPointerCapture(e.pointerId); Engine.refresh(); draw(); return;
+      }
+      if (tool === 'sel' || (tool === 'env' && !hh)) {
+        S.selClip = null; if (hh) S.selTrack = hh.track.id;
+        drag = { kind: 'range', b0: snapBeat(b), b1: snapBeat(b), moved: false }; s.setPointerCapture(e.pointerId); draw(); return;
+      }
+      if (tool === 'draw' && hh && !hh.clip) {
+        const A = drawAsset(); if (!A) { status('Pick a file in Media first (or select a clip): the Draw tool paints it onto tracks.'); return; }
+        Hist.push();
+        const c = clipFor(A, Math.max(0, snapBeat(b))); c.start = Math.max(0, snapBeat(b)); c.offB = A.isLoop ? 0 : c.offB;
+        if (c.sync && !A.isLoop) { c.offB = 0; c.len = Math.min(c.len, clipMaxLen(c)); }
+        hh.track.clips.push(c); S.selClip = c.id; S.selTrack = hh.track.id;
+        drag = { kind: 'draw', clip: c, track: hh.track, ti: hh.ti, b0: c.start, y0: y, orig: { ...c }, moved: true, pushed: true };
+        s.setPointerCapture(e.pointerId); draw(); return;
+      }
       if (hh && hh.clip) {
         S.selClip = hh.clip.id; S.selTrack = hh.track.id;
         if (hh.zone === 'fx') { draw(); clipFx(hh.clip); return; }
@@ -436,7 +458,7 @@ const Arrange = (() => {
         const hh = hit(x, y);
         const nh = hh && hh.clip ? hh : null;
         if ((nh && nh.clip) !== (hover && hover.clip)) { hover = nh; draw(); }
-        s.style.cursor = nh ? cursorFor[nh.zone] : 'default';
+        s.style.cursor = tool === 'erase' ? (nh ? 'not-allowed' : 'default') : tool === 'sel' ? 'text' : tool === 'draw' && !nh ? 'crosshair' : nh ? cursorFor[nh.zone] : 'default';
         if (nh && nh.zone === 'fx') s.title = 'Clip effects (E)'; else s.title = '';
         return;
       }
@@ -451,6 +473,12 @@ const Arrange = (() => {
         draw(); return;
       }
       if (drag.kind === 'range') { drag.b1 = snapBeat(Math.max(0, b)); drag.moved = drag.moved || Math.abs(drag.b1 - drag.b0) > 0; drawOverlay(); return; }
+      if (drag.kind === 'erase') { const h2 = hit(x, y); if (h2 && h2.clip) { rippleRemove(h2.clip, h2.track); Engine.refresh(); draw(); } return; }
+      if (drag.kind === 'draw') {
+        const c = drag.clip, A = S.assets.get(c.asset), ne = Math.max(c.start + (P.snap > 0 ? P.snap : 0.25), e.shiftKey ? b : snapBeat(b));
+        if (A && A.isLoop) { c.loop = true; c.len = ne - c.start; } else c.len = Math.min(ne - c.start, clipMaxLen(c));
+        layout(); draw(); return;
+      }
       const d = b - drag.b0;
       if (!drag.moved && Math.abs(d * ppb) < 3 && Math.abs(y - drag.y0) < 4) return;
       if (!drag.pushed) { Hist.push(); drag.pushed = true; }
@@ -460,7 +488,7 @@ const Arrange = (() => {
         c.start = Math.max(0, e.shiftKey ? o.start + d : snapBeat(o.start + d));
         const nt = clamp(trackAtY(y), 0, P.tracks.length - 1);
         const tt = P.tracks[nt];
-        if (tt && tt !== drag.track) { drag.track.clips = drag.track.clips.filter((k) => k !== c); tt.clips.push(c); drag.track = tt; S.selTrack = tt.id; }
+        if (tt && tt !== drag.track) { drag.from = drag.from || drag.track; drag.track.clips = drag.track.clips.filter((k) => k !== c); tt.clips.push(c); drag.track = tt; S.selTrack = tt.id; }
         status(fmtBars(c.start, P.bpb) + ' · ' + fmtTime(T.b2s(c.start)));
       } else if (drag.kind === 'left') {
         Object.assign(c, o);
@@ -477,10 +505,10 @@ const Arrange = (() => {
         const ne = e.shiftKey ? o.start + o.len + d : snapBeat(o.start + o.len + d);
         c.len = Math.min(Math.max(0.0625, ne - o.start), clipMaxLen(c));
       } else if (drag.kind === 'fadeIn') {
-        c.fadeIn = clamp(T.b2s(b) - T.b2s(c.start), 0, clipSecs(c) - (c.fadeOut || 0));
+        c.fadeIn = clamp(T.b2s(b) - T.b2s(c.start), 0, clipSecs(c) - (c.fadeOut || 0)); c.axIn = false;
         status('Fade in ' + c.fadeIn.toFixed(2) + ' s');
       } else if (drag.kind === 'fadeOut') {
-        c.fadeOut = clamp(T.b2s(c.start + c.len) - T.b2s(b), 0, clipSecs(c) - (c.fadeIn || 0));
+        c.fadeOut = clamp(T.b2s(c.start + c.len) - T.b2s(b), 0, clipSecs(c) - (c.fadeIn || 0)); c.axOut = false;
         status('Fade out ' + c.fadeOut.toFixed(2) + ' s');
       }
       layout(); draw();
@@ -501,7 +529,11 @@ const Arrange = (() => {
           if (Engine.playing) Engine.play(P.cursor);
         }
         bus.emit('transport');
-      } else if (dd.moved) { Engine.refresh(); markDirty(); }
+      } else if (dd.moved) {
+        if (dd.kind === 'right' && PREF.ripple && dd.orig) rippleShift(dd.track, dd.orig.start + dd.orig.len, dd.clip.len - dd.orig.len, dd.clip);
+        if (dd.track && PREF.autoXfade && ['body', 'left', 'right', 'draw'].includes(dd.kind)) { autoXfade(dd.track); if (dd.from && dd.from !== dd.track) autoXfade(dd.from); }
+        Engine.refresh(); markDirty();
+      }
       draw();
     };
     s.addEventListener('pointerup', end);
@@ -537,7 +569,7 @@ const Arrange = (() => {
       else if (e.shiftKey && !e.deltaX) { e.preventDefault(); s.scrollLeft += e.deltaY; }
     }, { passive: false });
     // drop from media pool / files
-    s.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('text/x-rush-asset') || [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    s.addEventListener('dragover', (e) => { const ty = [...e.dataTransfer.types]; if (ty.includes('text/x-rush-asset') || ty.includes('text/x-rush-explorer') || ty.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
     s.addEventListener('drop', async (e) => {
       e.preventDefault(); e.stopPropagation();
       document.body.classList.remove('dropping');
@@ -545,6 +577,7 @@ const Arrange = (() => {
       const beat = Math.max(0, snapBeat(beatOf(x), P.snap > 0 ? P.snap : 1)), ti = trackAtY(y);
       const id = e.dataTransfer.getData('text/x-rush-asset');
       if (id && S.assets.get(id)) placeAsset(S.assets.get(id), ti, beat);
+      else if (e.dataTransfer.getData('text/x-rush-explorer')) Explorer.dropped(ti, beat);
       else if (e.dataTransfer.files.length) {
         const list = await importFiles([...e.dataTransfer.files]);
         let t = ti; for (const A of list) placeAsset(A, t++, beat);
@@ -590,8 +623,150 @@ const Arrange = (() => {
     const c = clipFor(A, beat);
     t.clips.push(c);
     S.selClip = c.id; S.selTrack = t.id;
+    if (PREF.autoXfade) autoXfade(t);
     Engine.refresh(); bus.emit('project');
+    maybeBeatmap(A);
     return c;
+  }
+  // long songs get the Beatmapper the first time they are used (Options › Beatmapper for long songs)
+  function maybeBeatmap(A) {
+    if (!A || A.isLoop || A.beatmapped || A.revOf || !PREF.autoBeatmap || A.buffer.duration < PREF.beatmapMin) return;
+    A.beatmapped = true;
+    setTimeout(() => beatmap(A), 60);
+  }
+  async function beatmap(A) {
+    if (!A) return;
+    if (A.analyzing) await new Promise((res) => { const f = (x) => { if (x === A) res(); }; bus.on('assetMeta', f); setTimeout(res, 30000); });
+    const first = !P.tracks.some((t) => t.clips.some((c) => c.asset !== A.id));
+    const r = await Beatmapper.open(A, { first });
+    A.beatmapped = true;
+    if (!r || r.skip) return;
+    Hist.push();
+    applyGrid(A, r.bpm, r.db);
+    const clips = []; for (const t of P.tracks) for (const c of t.clips) if (c.asset === A.id) clips.push([c, t]);
+    for (const [c] of clips) if (!!c.sync !== !!r.sync) { toggleSync(c); Hist.undo.pop(); }
+    if (r.setTempo && clips.length) { const c0 = clips.map(([c]) => c).sort((a, b) => a.start - b.start)[0]; const at = Math.max(0, c0.start - (c0.offB || 0)); if (at < 1e-6) setBpm(Math.round(r.bpm * 100) / 100); else T.add(at, Math.round(r.bpm * 100) / 100, false); }
+    Engine.refresh(); draw(); markDirty();
+    status('Beatmapped ' + A.name + ' at ' + r.bpm.toFixed(2) + ' BPM');
+  }
+  // move a song's beat grid while keeping every synced clip on the same audio
+  function applyGrid(A, bpm, db) {
+    if (Math.abs(bpm - (A.bpm || 0)) < 1e-6 && Math.abs(db - (A.downbeat || 0)) < 1e-6) return;
+    const keep = [];
+    for (const tr of P.tracks) for (const k of tr.clips) if (k.asset === A.id && isSynced(k, A)) keep.push([k, clipBufTime(k, k.start)]);
+    A.bpm = bpm; A.downbeat = db; A.beats = A.buffer.duration * bpm / 60; A.stretch.clear();
+    for (const [k, tStart] of keep) { if (tStart == null) continue; const end = k.start + k.len; k.offB = (tStart - db) * bpm / 60; k.len = Math.min(end - k.start, clipMaxLen(k)); }
+    bus.emit('assets');
+  }
+  // the Draw tool paints the selected clip's file, else the last file in Media
+  let lastDrawAsset = null;
+  function drawAsset() {
+    const s = selected(); if (s && S.assets.get(s.c.asset)) return (lastDrawAsset = S.assets.get(s.c.asset));
+    if (lastDrawAsset && S.assets.has(lastDrawAsset.id)) return lastDrawAsset;
+    const all = [...S.assets.values()]; return all[all.length - 1] || null;
+  }
+  function setTool(t) {
+    tool = t;
+    $$('.tool-btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
+    const names = { edit: 'Edit tool: move, trim, fade and select clips', draw: 'Draw tool: drag on an empty part of a track to paint the selected file', env: 'Envelope tool: click a track to add volume points, drag to shape them', sel: 'Time selection tool: drag anywhere to select a range', erase: 'Erase tool: click or drag across clips to remove them' };
+    status(names[t] || '');
+    if (t === 'env') for (const tr of P.tracks) { tr.env = tr.env || { vol: [], pan: [], show: null }; if (!tr.env.show) tr.env.show = 'vol'; }
+    draw();
+  }
+  // non-destructive reverse: the clip switches to a reversed copy of its file (made once, shared)
+  function reversedOf(A) {
+    const other = A.revOf ? S.assets.get(A.revOf) : A.revId ? S.assets.get(A.revId) : [...S.assets.values()].find((x) => x.revOf === A.id);
+    if (other) { A.revId = A.revOf ? undefined : other.id; return other; }
+    const chs = bufferChannels(A.buffer).map((c) => { const r = new Float32Array(c.length); for (let i = 0, n = c.length; i < n; i++) r[i] = c[n - 1 - i]; return r; });
+    const dur = A.buffer.duration, p = A.bpm ? 60 / A.bpm : 0;
+    const R = addAsset(A.name + ' (reversed)', makeBuffer(chs, A.buffer.sampleRate), { bpm: A.bpm, beats: A.beats, isLoop: A.isLoop, key: A.key, downbeat: p ? fmod(dur - (A.downbeat || 0), p) : 0 });
+    R.revOf = A.id; R.beatmapped = true; A.revId = R.id;
+    if (A.stems && A.stems.state === 'done') {
+      const bufs = {}, peaks = {};
+      for (const k in A.stems.buffers) { const b = A.stems.buffers[k]; bufs[k] = makeBuffer(bufferChannels(b).map((c) => { const r = new Float32Array(c.length); for (let i = 0, n = c.length; i < n; i++) r[i] = c[n - 1 - i]; return r; }), b.sampleRate); peaks[k] = computePeaks(bufs[k]); }
+      R.stems = { state: 'done', buffers: bufs, peaks, promise: null, ms: 0 };
+    }
+    return R;
+  }
+  function reverse(c) {
+    const A = S.assets.get(c.asset); if (!A) return;
+    Hist.push();
+    const base = clipBase(c), dur = base.duration;
+    const R = reversedOf(A);
+    if (isSynced(c, A)) {
+      const p = 60 / A.bpm, t0 = (A.downbeat || 0) + (c.offB || 0) * p, t1 = t0 + c.len * p;
+      c.asset = R.id; c.offB = (dur - t1 - (R.downbeat || 0)) / p;
+      if (c.loop) c.offB = fmod(c.offB - srcBeatRange(R, base)[0], assetBeats(R, base)) + srcBeatRange(R, base)[0];
+    } else {
+      const secs = T.b2s(c.start + c.len) - T.b2s(c.start), o = c.offset || 0;
+      c.asset = R.id; c.offset = c.loop ? fmod(dur - o - secs, dur) : Math.max(0, dur - o - secs);
+    }
+    [c.fadeIn, c.fadeOut] = [c.fadeOut || 0, c.fadeIn || 0]; [c.axIn, c.axOut] = [c.axOut, c.axIn];
+    c.reversed = !c.reversed;
+    Engine.refresh(); draw(); markDirty();
+    status(c.reversed ? 'Clip reversed (non-destructive: the original file is untouched)' : 'Clip plays forwards again');
+  }
+
+  // ---- Track EQ: 5-band with a live response curve ----
+  function trackEqDialog(t) {
+    Hist.push();
+    const before = JSON.stringify([t.low, t.mid, t.high, t.eq || null]);
+    t.eq = trackEq(t);
+    const cv = el('canvas', { class: 'teq-graph', 'aria-label': 'EQ response' });
+    const ctl = el('div', { class: 'teq-ctl' });
+    const live = () => { const n = Engine.nodes.get(t.id); if (n && Engine.ctx) { Engine.applyAll(); } drawG(); markDirty(); };
+    const logF = (v) => Math.round(Math.exp(v)), linF = (f) => Math.log(f);
+    const band = (title, rows) => el('div', { class: 'teq-band' }, el('h4', {}, title), ...rows);
+    const slider = (label, get, set, min, max, step, fmt) => {
+      const out = el('output', {}, fmt(get()));
+      const i = el('input', { type: 'range', class: 'slim', min, max, step, value: get() });
+      i.addEventListener('input', () => { set(parseFloat(i.value)); out.textContent = fmt(get()); live(); });
+      i.addEventListener('dblclick', () => { i.value = min < 0 && max > 0 ? 0 : i.value; i.dispatchEvent(new Event('input')); });
+      return el('label', { class: 'teq-row' }, el('span', {}, label), i, out);
+    };
+    const fHz = (f) => (f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + ' kHz' : Math.round(f) + ' Hz');
+    const db = (v) => (v > 0 ? '+' : '') + v.toFixed(1) + ' dB';
+    ctl.append(
+      band('Low cut', [slider('Freq', () => (t.eq.hp > 0 ? linF(t.eq.hp) : linF(10)), (v) => (t.eq.hp = v <= linF(12) ? 0 : logF(v)), linF(10), linF(1000), 0.01, () => (t.eq.hp > 0 ? fHz(t.eq.hp) : 'off'))]),
+      band('Low', [slider('Gain', () => t.low, (v) => (t.low = v), -18, 18, 0.1, db), slider('Freq', () => linF(t.eq.lowF), (v) => (t.eq.lowF = logF(v)), linF(30), linF(1000), 0.01, () => fHz(t.eq.lowF))]),
+      band('Mid', [slider('Gain', () => t.mid, (v) => (t.mid = v), -18, 18, 0.1, db), slider('Freq', () => linF(t.eq.midF), (v) => (t.eq.midF = logF(v)), linF(100), linF(12000), 0.01, () => fHz(t.eq.midF)), slider('Width', () => t.eq.midQ, (v) => (t.eq.midQ = v), 0.2, 8, 0.05, (v) => 'Q ' + v.toFixed(2))]),
+      band('High', [slider('Gain', () => t.high, (v) => (t.high = v), -18, 18, 0.1, db), slider('Freq', () => linF(t.eq.highF), (v) => (t.eq.highF = logF(v)), linF(1500), linF(16000), 0.01, () => fHz(t.eq.highF))]),
+      band('High cut', [slider('Freq', () => (t.eq.lp > 0 ? linF(t.eq.lp) : linF(20000)), (v) => (t.eq.lp = v >= linF(19500) ? 0 : logF(v)), linF(1000), linF(20000), 0.01, () => (t.eq.lp > 0 ? fHz(t.eq.lp) : 'off'))]));
+    function drawG() {
+      const r = cv.getBoundingClientRect(); if (!r.width) return;
+      const { ctx, w, h } = fitCanvas(cv);
+      ctx.fillStyle = C.bg; ctx.fillRect(0, 0, w, h);
+      const f0 = 20, f1 = 20000, xF = (f) => Math.log(f / f0) / Math.log(f1 / f0) * w, yD = (d) => h / 2 - d / 24 * (h / 2 - 8);
+      ctx.font = '10px ' + getComputedStyle(document.body).getPropertyValue('--font-mono');
+      for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { ctx.fillStyle = alpha(C.line, 0.9); ctx.fillRect(Math.round(xF(f)), 0, 1, h); ctx.fillStyle = C.faint; ctx.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), xF(f) + 3, h - 4); }
+      for (const d of [-12, 0, 12]) { ctx.fillStyle = alpha(C.line, d ? 0.6 : 1); ctx.fillRect(0, Math.round(yD(d)), w, 1); ctx.fillStyle = C.faint; ctx.fillText((d > 0 ? '+' : '') + d, 3, yD(d) - 3); }
+      // exact response of the same biquads the engine uses
+      const oc = new OfflineAudioContext(1, 1, 48000), N = Math.max(2, Math.floor(w)), fr = new Float32Array(N);
+      for (let i = 0; i < N; i++) fr[i] = f0 * Math.pow(f1 / f0, i / (N - 1));
+      const mk = (type, f, g, q) => { const b = oc.createBiquadFilter(); b.type = type; b.frequency.value = f; if (g != null) b.gain.value = g; if (q != null) b.Q.value = q; return b; };
+      const e = t.eq, fl = [mk('highpass', e.hp > 0 ? e.hp : 10, null, 0.707), mk('lowshelf', e.lowF, t.low), mk('peaking', e.midF, t.mid, e.midQ), mk('highshelf', e.highF, t.high), mk('lowpass', e.lp > 0 ? e.lp : 23999, null, 0.707)];
+      const tot = new Float32Array(N).fill(1), mag = new Float32Array(N), ph = new Float32Array(N);
+      for (const b of fl) { b.getFrequencyResponse(fr, mag, ph); for (let i = 0; i < N; i++) tot[i] *= mag[i]; }
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) { const y = yD(clamp(20 * Math.log10(tot[i] + 1e-9), -26, 26)); i ? ctx.lineTo(i, y) : ctx.moveTo(i, y); }
+      ctx.strokeStyle = t.color || C.accent; ctx.lineWidth = 2; ctx.stroke();
+      ctx.lineTo(w, h / 2); ctx.lineTo(0, h / 2); ctx.closePath(); ctx.fillStyle = alpha(t.color || C.accent, 0.12); ctx.fill();
+    }
+    const bg = el('div', { class: 'modal-bg' });
+    const close = (ok) => {
+      bg.remove(); document.removeEventListener('keydown', esc, true);
+      if (!ok) { const [l, m, hi, eq] = JSON.parse(before); t.low = l; t.mid = m; t.high = hi; t.eq = eq || undefined; Hist.undo.pop(); Engine.applyAll(); }
+      bus.emit('tracks'); renderHeads(); draw();
+    };
+    const box = el('div', { class: 'modal teq', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Track EQ' },
+      el('header', {}, el('h3', {}, 'Track EQ · ' + t.name), el('p', {}, 'Changes are heard immediately. Double-click a gain slider to reset it.')),
+      el('div', { class: 'teq-body' }, cv, ctl),
+      el('footer', {}, el('button', { class: 'btn ghost', type: 'button', onclick: () => { t.low = t.mid = t.high = 0; t.eq = trackEq({}); close(true); trackEqDialog(t); Hist.undo.pop(); } }, 'Flat'), el('div', { class: 'spacer' }), el('button', { class: 'btn', type: 'button', onclick: () => close(false) }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: () => close(true) }, 'OK')));
+    const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } };
+    document.addEventListener('keydown', esc, true);
+    bg.addEventListener('pointerdown', (e) => { if (e.target === bg) close(true); });
+    bg.append(box); document.body.append(bg);
+    requestAnimationFrame(drawG);
   }
   // a song's first downbeat lands on `beat`; its intro (if any) hangs to the left of it
   function clipFor(A, beat, stem = null) {
@@ -625,6 +800,7 @@ const Arrange = (() => {
     }
     if (mix.xfade) crossfade(c, false);
     S.selClip = c.id; S.selTrack = t.id;
+    maybeBeatmap(A);
     Engine.syncTracks(); Engine.refresh(); bus.emit('project'); bus.emit('tempo');
     ensureVisible(start); ensureTrackVisible(P.tracks.length - 1);
     status('Added ' + A.name + ' to the mix at bar ' + (Math.floor(start / P.bpb) + 1) + (mix.xfade && end > 0 ? ' with a ' + mix.overlap + '-beat crossfade' : ''));
@@ -680,6 +856,7 @@ const Arrange = (() => {
       { label: 'Pitch +1 semitone', key: 'Shift+↑', action: () => clipPitch(c, 1) },
       { label: 'Pitch −1 semitone', key: 'Shift+↓', action: () => clipPitch(c, -1) },
       { label: (c.keylock === false ? '✓ ' : '') + 'Varispeed (pitch follows tempo, like vinyl)', disabled: !c.sync, action: () => { Hist.push(); c.keylock = c.keylock === false; Engine.refresh(); draw(); } },
+      { label: (c.reversed ? '✓ ' : '') + 'Reverse', key: 'Shift+R', action: () => reverse(c) },
       { label: 'Crossfade with overlapping clips', key: 'X', action: () => crossfade(c) },
       { label: 'Fade curve: ' + (c.fadeCurve === 'lin' ? 'linear → switch to smooth' : 'smooth → switch to linear'), action: () => { Hist.push(); c.fadeCurve = c.fadeCurve === 'lin' ? 'eq' : 'lin'; Engine.refresh(); draw(); } },
       { label: 'Remove fades', disabled: !(c.fadeIn || c.fadeOut), action: () => { Hist.push(); c.fadeIn = 0; c.fadeOut = 0; Engine.refresh(); draw(); } },
@@ -694,6 +871,7 @@ const Arrange = (() => {
       { label: c.loop ? 'Turn off looping' : 'Loop this clip', action: () => { Hist.push(); c.loop = !c.loop; if (!c.loop) c.len = Math.min(c.len, clipMaxLen(c)); Engine.refresh(); draw(); } },
       { label: 'Clip gain…', action: async () => { const r = await showDialog({ title: 'Clip gain', fields: [{ id: 'g', label: 'Gain', type: 'range', min: -24, max: 12, step: 0.1, value: c.gain || 0, format: (v) => fmtDb(v) + ' dB' }] }); if (r) { Hist.push(); c.gain = r.g; Engine.refresh(); draw(); } } },
       { label: 'Song tempo & key…', disabled: !A, action: () => sourceTempo(A) },
+      { label: 'Beatmapper…', disabled: !A || A.isLoop, action: () => beatmap(A) },
       { label: 'Set project tempo to this song (' + (A && A.bpm ? fmtBpm(A.bpm) : '—') + ' BPM) here', disabled: !A || !A.bpm, action: () => T.add(c.start, Math.round(A.bpm * 100) / 100, false) },
       '-',
       { label: 'Open in Editor', disabled: !!c.stem, action: () => Editor.open(c.asset) },
@@ -795,15 +973,7 @@ const Arrange = (() => {
       if (!ok) return;
       read();
       Hist.push();
-      const gridChanged = Math.abs(st.bpm - (A.bpm || 0)) > 1e-6 || Math.abs(st.db - (A.downbeat || 0)) > 1e-6;
-      if (gridChanged) {
-        // keep every synced clip of this song starting at the same audio, on the new grid
-        const keep = [];
-        for (const tr of P.tracks) for (const k of tr.clips) if (k.asset === A.id && isSynced(k, A)) keep.push([k, clipBufTime(k, k.start)]);
-        A.bpm = st.bpm; A.downbeat = st.db; A.beats = base.duration * st.bpm / 60; A.stretch.clear();
-        for (const [k, tStart] of keep) { if (tStart == null) continue; const sbNew = (tStart - st.db) * st.bpm / 60; const end = k.start + k.len; k.offB = sbNew; k.len = Math.min(end - k.start, clipMaxLen(k)); }
-        bus.emit('assets');
-      }
+      applyGrid(A, st.bpm, st.db); A.beatmapped = true;
       if (st.sync !== !!c.sync && A.bpm) { toggleSync(c); Hist.undo.pop(); }
       c.keylock = st.keylock; c.pitch = st.pitch; c.gain = st.gain; c.fadeIn = st.fadeIn; c.fadeOut = st.fadeOut;
       if (st.loop !== !!c.loop) { c.loop = st.loop; if (!c.loop) c.len = Math.min(c.len, clipMaxLen(c)); }
@@ -859,14 +1029,39 @@ const Arrange = (() => {
     Engine.refresh(); draw();
   }
   function duplicate(c, t) { Hist.push(); const d = JSON.parse(JSON.stringify(c)); d.id = uid('c'); d.start = c.start + c.len; t.clips.push(d); S.selClip = d.id; Engine.refresh(); layout(); draw(); }
-  function del(c, t) { Hist.push(); t.clips = t.clips.filter((k) => k !== c); S.selClip = null; Engine.refresh(); draw(); }
+  function del(c, t) { Hist.push(); rippleRemove(c, t); Engine.refresh(); draw(); }
+  // remove a clip; with ripple on, later clips on the track close the gap
+  function rippleRemove(c, t) {
+    t.clips = t.clips.filter((k) => k !== c); if (S.selClip === c.id) S.selClip = null;
+    if (PREF.ripple) rippleShift(t, c.start + c.len, -c.len);
+    if (PREF.autoXfade) autoXfade(t);
+  }
+  function rippleShift(t, from, d, except) {
+    if (Math.abs(d) < 1e-9) return;
+    for (const k of t.clips) if (k !== except && k.start >= from - 1e-6) k.start = Math.max(0, k.start + d);
+  }
+  // overlapping clips on one track crossfade automatically (and the fades go away when they no longer overlap)
+  function autoXfade(t) {
+    const cl = t.clips.slice().sort((a, b) => a.start - b.start);
+    for (const c of cl) { if (c.axIn) { c.fadeIn = 0; c.axIn = false; } if (c.axOut) { c.fadeOut = 0; c.axOut = false; } }
+    for (let i = 0; i < cl.length; i++) for (let j = i + 1; j < cl.length; j++) {
+      const a = cl[i], b = cl[j], aEnd = a.start + a.len;
+      if (b.start >= aEnd - 1e-6) continue;
+      if (b.start + b.len <= aEnd + 1e-6) continue;            // fully inside: leave it alone
+      const sec = T.b2s(aEnd) - T.b2s(b.start);
+      if ((a.fadeOut || 0) < sec) { a.fadeOut = sec; a.axOut = true; }
+      if ((b.fadeIn || 0) < sec) { b.fadeIn = sec; b.axIn = true; }
+    }
+  }
   function copy(c, t) { clipboard = { clip: JSON.parse(JSON.stringify(c)), ti: P.tracks.indexOf(t) }; status('Copied clip'); }
   function paste(beat, ti) {
     if (!clipboard) return;
     Hist.push();
     const t = P.tracks[ti] || P.tracks[clipboard.ti] || P.tracks[0]; if (!t) return;
     const d = JSON.parse(JSON.stringify(clipboard.clip)); d.id = uid('c'); d.start = Math.max(0, beat);
-    t.clips.push(d); S.selClip = d.id; S.selTrack = t.id;
+    if (PREF.ripple) rippleShift(t, d.start, d.len);
+    t.clips.push(d);
+    if (PREF.autoXfade) autoXfade(t); S.selClip = d.id; S.selTrack = t.id;
     Engine.refresh(); layout(); draw(); status('Pasted at ' + fmtBars(d.start, P.bpb));
   }
 
@@ -969,6 +1164,9 @@ const Arrange = (() => {
     if (k === 'Enter' && e.altKey && s) { clipProps(s.c, s.t); return true; }
     if ((k === 'ArrowUp' || k === 'ArrowDown') && e.shiftKey && !mod && s) { clipPitch(s.c, k === 'ArrowUp' ? 1 : -1); return true; }
     if (lk === 'f' && !mod) { zoomFit(); return true; }
+    if (!mod && !e.altKey && !e.shiftKey && ['a', 'd', 'g', 'i', 'u'].includes(lk)) { setTool({ a: 'edit', d: 'draw', g: 'env', i: 'sel', u: 'erase' }[lk]); return true; }
+    if (lk === 'r' && e.shiftKey && !mod && s) { reverse(s.c); return true; }
+    if (lk === 'q' && e.shiftKey && !mod) { const t = P.tracks.find((x) => x.id === S.selTrack) || P.tracks[0]; if (t) trackEqDialog(t); return true; }
     if (lk === 'z' && !mod) { if (s) zoomTo(s.c.start, s.c.start + s.c.len); else if (P.loop.end > P.loop.start) zoomTo(P.loop.start, P.loop.end); return true; }
     if (k === 'ArrowLeft' || k === 'ArrowRight') {
       const dir = k === 'ArrowLeft' ? -1 : 1;
@@ -1106,7 +1304,7 @@ const Arrange = (() => {
   }
   return {
     init, draw, drawOverlay, drawOverview, layout, renderHeads, follow, key, placeAsset, clipFor, addTrack, selected, zoomAt, zoomFit, addMarker, transpose,
-    addToMix, mixSettings, crossfade, crossfadeAll, clipFx, clipProps, tickMeters, tempoDialog, jumpMarker, setCursor, setTH, nextClip,
+    addToMix, mixSettings, crossfade, crossfadeAll, clipFx, clipProps, tickMeters, tempoDialog, setTool, get tool() { return tool; }, reverse, beatmap, applyGrid, trackEqDialog, autoXfade, jumpMarker, setCursor, setTH, nextClip,
     get ppb() { return ppb; }, set ppb(v) { ppb = v; }, get TH() { return TH; },
   };
 })();

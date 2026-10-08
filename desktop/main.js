@@ -9,8 +9,9 @@ function createWindow() {
     webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   Menu.setApplicationMenu(null);
-  // allow microphone for recording; block any outbound web request
-  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(['media', 'audioCapture'].includes(perm)));
+  // allow the microphone (recording) and your own folders/files (Explorer, Save As); block any outbound web request
+  const allowed = ['media', 'audioCapture', 'fileSystem'];
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.includes(perm)));
   session.defaultSession.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^https?:/i.test(d.url) }));
   win.loadFile(path.join(__dirname, 'app', 'RushMusicStudio.html'));
 }

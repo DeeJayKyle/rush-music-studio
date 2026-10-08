@@ -1,4 +1,4 @@
-# Rush Music Studio 1.2
+# Rush Music Studio 1.3
 
 An offline, open-source music studio. It combines a loop-based multitrack arranger, a sample-accurate audio editor, a real-time four-stem separator and a mixer in one app. No licence key, no account and no internet connection are needed. Written from scratch and released under the MIT licence.
 
@@ -21,7 +21,39 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 
 ## What's inside
 
-**Made for mixtapes (new in 1.2)**
+**New in 1.3: sound quality and studio workflow**
+- **Mastering export (Ctrl+E).** Export to WAV (16-bit, 24-bit or 32-bit float) or MP3 (128–320 kbps), at 44.1 to 96 kHz, for the whole project, the loop region or from the cursor.
+  - Loudness presets: Streaming −14 LUFS, Apple Music −16, Mixtape −10, Club −8, Broadcast EBU R128 −23, true-peak only, or custom.
+  - Loudness is measured to ITU-R BS.1770-4 / EBU R128 (matches FFmpeg's `ebur128` to 0.1 LU).
+  - A two-stage limiter with 4× oversampled true-peak detection keeps peaks under the ceiling. It never limits deeper than 10 dB; if the target needs more, it tells you instead of crushing the mix.
+  - TPDF dither with noise shaping. Title, artist, album, genre, year, copyright and comments are written into WAV (LIST/INFO) and MP3 (ID3v2) files.
+  - "Measure loudness" previews the result before you export, and every export ends with a loudness report.
+- **Explorer (Alt+2).** Add your music folders once and browse them from the sidebar.
+  - Each file shows its length, original format, sample rate, bit depth, tempo, key and size.
+  - Arrow keys auto-preview through a separate preview bus with its own volume; you can optionally preview at the project tempo.
+  - Enter or double-click adds the song to the mix. You can also drag a song onto the timeline.
+- **Beatmapper.** When you add a long song, a three-step wizard opens:
+  1. Set the first downbeat.
+  2. Check the grid later in the song: drag a beat line onto its hit to correct the tempo.
+  3. Choose whether the song follows the project tempo.
+
+  Change the song length that triggers it in Preferences, or reopen it from a clip's menu.
+- **Tools.** Edit (A), Draw (D), Envelope (G), Time selection (I) and Erase (U), on the toolbar or by key.
+- **Clips.**
+  - Non-destructive Reverse (Shift+R).
+  - Automatic crossfades when clips overlap on a track.
+  - Ripple edits (Ctrl+L) for delete, trim and paste.
+  - Quick 3 ms fades on clip edges that cut into audio, so edits never click.
+- **Track EQ (Shift+Q).** Low cut, low shelf, parametric mid, high shelf and high cut, with a live response curve.
+- **Project workflow.**
+  - A New Project dialog with metadata and audio defaults; "start all new projects with these settings" saves them.
+  - Project properties (Alt+Enter).
+  - Real Save / Save As (Ctrl+Shift+S) to the same file, and Open recent.
+  - View and Options menus: snapping (F8), automatic crossfades, ripple, loop, metronome, count-in when recording, bypass all effects (Shift+B).
+  - Preferences (Ctrl+,): latency and engine sample rate.
+- **Timing.** Exports and the metronome now compensate for the compressors' look-ahead delay, so rendered audio lines up with the grid to the sample.
+
+**Made for mixtapes (1.2)**
 - **Add to mix.** The + button on any song in Media puts it on its own track, overlapping the end of the mix, with an automatic crossfade: the "staircase" layout.
 - **Tempo markers.** The red lane above the ruler holds tempo changes. Double-click it (or press T) to add one; choose an instant change or a gradual ramp from the previous marker. Drag flags to move them. Right-click for Edit, Go to, Delete, and Adjust tempo to match the cursor.
 - **Songs follow the tempo map.** Every song is time-stretched to the tempo at each moment, holds and ramps included, with its pitch kept. Beats land within about 5 ms of the grid.
@@ -94,7 +126,7 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 **Projects**
 - `.rush` project files store all audio losslessly.
 - Crash-recovery autosave keeps your session in the browser's local storage.
-- The mix renders faster than real time to WAV.
+- The mix renders faster than real time to WAV or MP3, with optional mastering.
 
 ## How the stem separator works
 
@@ -116,6 +148,11 @@ The masks always sum to one, so the four stems add back up to the original exact
 | `src/plugins.js` | Plugin rack |
 | `src/chainer.js` | Plug-in Chainer UI |
 | `src/worker.js` | DSP thread: stems, tempo/key, stretch, denoise, spectrogram |
+| `src/master.js` | Mastering on the DSP thread: BS.1770 loudness, true-peak limiter, dither, WAV writer |
+| `src/mp3worker.js` | MP3 encoder thread (ID3v2 tags) around the LAME library |
+| `src/shell.js` | Preferences, Save/Save As/Recent, project properties, export dialog, View/Options menus |
+| `src/explorer.js` | Explorer file browser |
+| `src/beatmap.js` | Beatmapper wizard |
 | `src/engine.js` | Audio engine, project model, save/load |
 | `src/arrange.js` | Arranger view |
 | `src/editor.js` | Editor view |
@@ -124,7 +161,14 @@ The masks always sum to one, so the four stems add back up to the original exact
 | `src/looplab.js` | Loop Lab |
 | `src/main.js` | App shell |
 
+## Third-party code
+
+MP3 export uses [lamejs](https://github.com/zhuker/lamejs), a JavaScript port of the [LAME](https://lame.sourceforge.net) encoder, under the LGPL. It is included unmodified as a separate file (`src/vendor/lame.min.js`, licence in `src/vendor/LAMEJS-LICENSE.txt`) and loaded into its own script block, so you can swap it for another build. Everything else is original code under the MIT licence.
+
 ## Keyboard
+
+Press `?` in the app for the full sheet. The basics:
+
 
 | Keys | Action |
 |---|---|
@@ -132,11 +176,15 @@ The masks always sum to one, so the four stems add back up to the original exact
 | Home | Go to start |
 | R | Record |
 | L | Loop |
-| M | Metronome |
+| C | Metronome |
 | 1–4 | Switch view |
 | Ctrl+S / Ctrl+O | Save / open project |
 | Ctrl+I | Import audio |
-| Ctrl+E | Export mix |
+| Ctrl+E | Export mix (WAV/MP3 with mastering) |
+| Ctrl+Shift+S | Save as |
+| Ctrl+, | Preferences |
+| F8 | Snapping |
+| A D G I U | Edit, Draw, Envelope, Time selection, Erase tools |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+K | Effects (Plug-in Chainer) |
 | T / M | Tempo change / marker at the cursor |

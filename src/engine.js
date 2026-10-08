@@ -14,7 +14,7 @@ function newProject() {
     name: 'Untitled project', bpm: 105, bpb: 4, tracks: [],
     loop: { on: false, start: 0, end: 16 }, metro: false, snap: 1, cursor: 0,
     master: { vol: 0, limiter: true, low: 0, mid: 0, high: 0, rev: 2.2, dlyFb: 0.35, fx: [] },
-    markers: [],
+    markers: [], meta: {}, sr: 0,
   };
 }
 function newTrack(name) {
@@ -349,7 +349,9 @@ function buildTrack(ctx, master) {
   n.rev = ctx.createGain(); n.dly = ctx.createGain();
   n.chain = new Plugins.Chain(ctx);
   n.apan = ctx.createStereoPanner(); n.avol = ctx.createGain();
-  n.input.connect(n.low).connect(n.mid).connect(n.high).connect(n.comp).connect(n.makeup).connect(n.chain.input);
+  n.hp = ctx.createBiquadFilter(); n.hp.type = 'highpass'; n.hp.frequency.value = 10; n.hp.Q.value = 0.707;
+  n.lp = ctx.createBiquadFilter(); n.lp.type = 'lowpass'; n.lp.frequency.value = Math.min(22000, ctx.sampleRate / 2 - 100); n.lp.Q.value = 0.707;
+  n.input.connect(n.hp).connect(n.low).connect(n.mid).connect(n.high).connect(n.lp).connect(n.comp).connect(n.makeup).connect(n.chain.input);
   n.chain.output.connect(n.apan).connect(n.pan).connect(n.avol).connect(n.vol);
   n.vol.connect(n.an); n.vol.connect(master.input); n.vol.connect(n.rev).connect(master.revIn); n.vol.connect(n.dly).connect(master.dlyIn);
   return n;
@@ -357,6 +359,7 @@ function buildTrack(ctx, master) {
 function applyTrack(n, tr, soloOn, ctx) {
   const t = ctx.currentTime;
   n.low.gain.setTargetAtTime(tr.low, t, 0.01); n.mid.gain.setTargetAtTime(tr.mid, t, 0.01); n.high.gain.setTargetAtTime(tr.high, t, 0.01);
+  applyTrackEq(n, tr, ctx);
   const c = tr.comp;
   n.comp.threshold.value = -36 * c; n.comp.ratio.value = 1 + 7 * c; n.comp.knee.value = 8; n.comp.attack.value = 0.006; n.comp.release.value = 0.18;
   n.makeup.gain.setTargetAtTime(dbToGain(c * 9), t, 0.01);
@@ -365,6 +368,16 @@ function applyTrack(n, tr, soloOn, ctx) {
   n.vol.gain.setTargetAtTime(audible ? dbToGain(tr.vol) : 0, t, 0.008);
   n.rev.gain.setTargetAtTime(tr.rev, t, 0.01); n.dly.gain.setTargetAtTime(tr.dly, t, 0.01);
   n.chain.set(tr.fx || []);
+}
+
+// Track EQ: low cut, low shelf, parametric mid, high shelf, high cut
+const EQ_DEF = { hp: 0, lowF: 120, midF: 1000, midQ: 0.9, highF: 7000, lp: 0 };
+function trackEq(tr) { return Object.assign({}, EQ_DEF, tr.eq || {}); }
+function applyTrackEq(n, tr, ctx) {
+  const e = trackEq(tr), t = ctx.currentTime, nyq = ctx.sampleRate / 2 - 100;
+  n.hp.frequency.setTargetAtTime(e.hp > 0 ? e.hp : 10, t, 0.01);
+  n.lp.frequency.setTargetAtTime(e.lp > 0 ? Math.min(e.lp, nyq) : Math.min(22000, nyq), t, 0.01);
+  n.low.frequency.setTargetAtTime(e.lowF, t, 0.01); n.mid.frequency.setTargetAtTime(e.midF, t, 0.01); n.mid.Q.setTargetAtTime(e.midQ, t, 0.01); n.high.frequency.setTargetAtTime(e.highF, t, 0.01);
 }
 
 // ---- track envelopes (automation) ----
@@ -394,8 +407,26 @@ function scheduleAuto(ctx, nodes, a, b, when, fresh) {
 }
 
 // clip gain + fade envelope; fades are equal-power unless the clip asks for linear
+// clip fades in seconds; "quick fade edges" adds 5 ms de-click fades to bare clip edges
+// (only where the clip actually cuts into the audio, so natural starts and ends keep their attack)
+const QF = 0.003;
+function clipFades(c, clen) {
+  let qi = 0, qo = 0;
+  if (typeof PREF === 'undefined' || PREF.quickFade !== false) {
+    const q = Math.min(QF, clen / 4), A = S.assets.get(c.asset), base = A && clipBase(c);
+    if (base) {
+      const synced = isSynced(c, A), p = synced ? 60 / A.bpm : 0;
+      const t0 = synced ? (A.downbeat || 0) + (c.offB || 0) * p : (c.offset || 0);
+      const t1 = synced ? t0 + c.len * p : t0 + clen;
+      const D = base.duration, w0 = c.loop ? fmod(t0, D) : t0, w1 = c.loop ? fmod(t1, D) : t1;
+      qi = w0 > 0.0005 && w0 < D - 0.0005 ? q : 0;
+      qo = w1 > 0.0005 && w1 < D - 0.0005 ? q : 0;
+    }
+  }
+  return [Math.min(Math.max(c.fadeIn || 0, qi), clen), Math.min(Math.max(c.fadeOut || 0, qo), clen)];
+}
 function clipGainAt(c, x, clen) {
-  const gl = dbToGain(c.gain || 0), fi = Math.min(c.fadeIn || 0, clen), fo = Math.min(c.fadeOut || 0, clen);
+  const gl = dbToGain(c.gain || 0), [fi, fo] = clipFades(c, clen);
   const shape = (u) => (c.fadeCurve === 'lin' ? u : Math.sin(clamp(u, 0, 1) * Math.PI / 2));
   let g = gl;
   if (fi > 0 && x < fi) g *= shape(x / fi);
@@ -403,7 +434,7 @@ function clipGainAt(c, x, clen) {
   return g;
 }
 function scheduleClipEnv(param, c, local, dur, clen, t0, cut) {
-  const end = local + dur, fi = Math.min(c.fadeIn || 0, clen), fo = Math.min(c.fadeOut || 0, clen);
+  const end = local + dur, [fi, fo] = clipFades(c, clen);
   const declick = local > 0.002 ? 0.004 : 0;
   param.setValueAtTime(declick ? 0 : clipGainAt(c, local, clen), t0);
   if (declick) param.linearRampToValueAtTime(clipGainAt(c, local + declick, clen), t0 + declick);
@@ -486,13 +517,34 @@ function scheduleClips(ctx, nodes, a, b, when, first, list, capAtB, chains) {
   }
 }
 
+// DynamicsCompressor nodes delay audio by a fixed look-ahead; measure it once per sample rate
+const latCache = new Map();
+async function graphLatency(sr) {
+  if (latCache.has(sr)) return latCache.get(sr);
+  let d = 0;
+  try {
+    const oc = new OfflineAudioContext(1, Math.round(sr * 0.05), sr);
+    const b = oc.createBuffer(1, 1, sr); b.getChannelData(0)[0] = 0.25;
+    const src = oc.createBufferSource(); src.buffer = b;
+    const c = oc.createDynamicsCompressor(); c.threshold.value = 0; c.ratio.value = 1;
+    src.connect(c).connect(oc.destination); src.start(0);
+    const r = (await oc.startRendering()).getChannelData(0);
+    let bi = 0, bv = 0; for (let i = 0; i < r.length; i++) if (Math.abs(r[i]) > bv) { bv = Math.abs(r[i]); bi = i; }
+    d = 2 * bi / sr;                       // one in every track, one on the master
+  } catch (e) { }
+  latCache.set(sr, d);
+  return d;
+}
+
 const Engine = {
   ctx: null, master: null, nodes: new Map(), playing: false, sources: [], segs: [], timer: null,
   recording: false, rec: null, deckOut: null, previewSrc: null, clipChains: new Map(),
   ensure(resume = true) {
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AC({ latencyHint: 'interactive' });
+      const opt = { latencyHint: (typeof PREF !== 'undefined' && PREF.latency) || 'interactive' };
+      if (typeof PREF !== 'undefined' && PREF.sampleRate) opt.sampleRate = PREF.sampleRate;
+      try { this.ctx = new AC(opt); } catch (e) { this.ctx = new AC({ latencyHint: 'interactive' }); }
       this.master = buildMaster(this.ctx, this.ctx.destination);
       this.syncTracks();
       $('#statusSr').textContent = (this.ctx.sampleRate / 1000).toFixed(1) + ' kHz';
@@ -500,6 +552,32 @@ const Engine = {
     if (resume && this.ctx.state === 'suspended') this.ctx.resume();
     return this.ctx;
   },
+  // rebuild the audio engine (latency or sample-rate change)
+  async recreate() {
+    const was = this.playing ? this.posBeats() : null;
+    this.halt(); this.stopPreview(); this.stopAudition && this.stopAudition();
+    const old = this.ctx;
+    this.ctx = null; this.master = null; this.nodes.clear(); this.clipChains.clear(); this.recMode = null; this.previewBus = null;
+    if (old) { try { await old.close(); } catch (e) { } }
+    Deck.unloadAudio && Deck.unloadAudio();
+    this.ensure();
+    if (was != null) this.play(was);
+  },
+  // preview bus: straight to the speakers, bypassing the mix (Explorer and Media auditioning)
+  audition(buf, { offset = 0, rate = 1, onEnd } = {}) {
+    const ctx = this.ensure();
+    this.stopAudition();
+    if (!this.previewBus) { this.previewBus = ctx.createGain(); this.previewBus.connect(ctx.destination); }
+    this.previewBus.gain.value = dbToGain(typeof PREF !== 'undefined' ? PREF.previewVol : -6);
+    const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
+    src.connect(this.previewBus); src.start(ctx.currentTime + 0.01, offset);
+    src.onended = () => { if (this.audSrc === src) { this.audSrc = null; onEnd && onEnd(); } };
+    this.audSrc = src; src.t0 = ctx.currentTime + 0.01; src.off = offset; src.rate = rate;
+    return src;
+  },
+  auditionPos() { const s = this.audSrc; if (!s || !this.ctx) return null; return s.off + Math.max(0, this.ctx.currentTime - s.t0) * s.rate; },
+  setPreviewVol(db) { if (this.previewBus) this.previewBus.gain.setTargetAtTime(dbToGain(db), this.ctx.currentTime, 0.02); },
+  stopAudition() { if (this.audSrc) { const s = this.audSrc; this.audSrc = null; try { s.stop(); } catch (e) { } } },
   syncTracks() {
     if (!this.ctx) return;
     const ids = new Set(P.tracks.map((t) => t.id));
@@ -559,7 +637,8 @@ const Engine = {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = bt % P.bpb === 0 ? 1760 : 1180;
       g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-      o.connect(g).connect(this.ctx.destination);
+      if (!this.clickDelay || this.clickDelay.context !== ctx) { this.clickDelay = ctx.createDelay(0.2); this.clickDelay.connect(ctx.destination); graphLatency(ctx.sampleRate).then((d) => { this.clickDelay.delayTime.value = d; }); }
+      o.connect(g).connect(this.clickDelay);
       o.start(t); o.stop(t + 0.06);
       this.sources.push(o);
     }
@@ -633,9 +712,10 @@ const Engine = {
     const chunks = [];
     let node;
     const startBeat = P.cursor;
+    const pre = (typeof PREF !== 'undefined' ? PREF.countIn : 0) * P.bpb;   // count-in bars before the cursor
     this.recording = true;
-    this.play(startBeat);
-    const startT = this.segs.length ? this.segs[0].when : ctx.currentTime;
+    this.play(startBeat - pre);
+    const startT = (this.segs.length ? this.segs[0].when : ctx.currentTime) + (T.b2s(startBeat) - T.b2s(startBeat - pre));
     if (this.recMode === 'wl') {
       node = new AudioWorkletNode(ctx, 'rush-rec', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
       node.port.onmessage = (e) => { if (e.data.t + 128 / ctx.sampleRate >= startT) chunks.push(e.data); };
@@ -664,7 +744,7 @@ const Engine = {
     if (!r.chunks.length) { status('Nothing recorded'); return; }
     const nch = Math.min(2, r.chunks[0].ch.length);
     let total = 0; for (const c of r.chunks) total += c.ch[0].length;
-    const lat = Math.round(((this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0)) * sr);
+    const lat = Math.round(((this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0) + (latCache.get(sr) || 0)) * sr);
     const skip = Math.max(0, Math.round((r.startT - r.chunks[0].t) * sr)) + lat;
     const chs = [];
     for (let c = 0; c < nch; c++) {
@@ -682,14 +762,20 @@ const Engine = {
   },
 
   // ---- offline render ----
-  async render({ fromBeat = 0, toBeat = null, sr = null, tail = 2 } = {}) {
+  async render({ fromBeat = 0, toBeat = null, sr = null, tail = 2, noLimiter = false } = {}) {
     await ensureStretched();
+    const keepLim = P.master.limiter;
+    if (noLimiter) P.master.limiter = false;   // the mastering stage applies a true-peak limiter instead
+    try { return await this._render(fromBeat, toBeat, sr, tail); } finally { P.master.limiter = keepLim; }
+  },
+  async _render(fromBeat, toBeat, sr, tail) {
     const end = toBeat == null ? projectEndBeats() : toBeat;
     if (end <= fromBeat) throw new Error('The project is empty. Add clips before exporting.');
     sr = sr || (this.ctx ? this.ctx.sampleRate : 44100);
     const a = T.b2s(fromBeat), b = T.b2s(end);
     const pre = 0.1;                       // silent pre-roll lets dynamics processors settle
-    const len = Math.ceil((b - a + tail + pre) * sr);
+    const lat = await graphLatency(sr);    // look-ahead delay of the track compressor + master limiter
+    const len = Math.ceil((b - a + tail + pre + lat) * sr);
     const oc = new OfflineAudioContext(2, len, sr);
     const master = buildMaster(oc, oc.destination);
     const nodes = new Map();
@@ -698,7 +784,7 @@ const Engine = {
     scheduleClips(oc, nodes, a, b, pre, true, null, true);
     scheduleAuto(oc, nodes, a, b, pre, true);
     const r = await oc.startRendering();
-    const skip = Math.round(pre * sr);
+    const skip = Math.round((pre + lat) * sr);   // exported audio lines up sample-accurately with the timeline
     return makeBuffer([0, 1].map((ch) => r.getChannelData(ch).slice(skip)), sr);
   },
   // plays a standalone buffer (editor preview); returns handle
@@ -724,7 +810,7 @@ const Project = {
     let off = 0;
     const pushF32 = (arr) => { parts.push(arr); const o = off; off += arr.byteLength; return o; };
     for (const A of S.assets.values()) {
-      const m = { id: A.id, name: A.name, sr: A.buffer.sampleRate, len: A.buffer.length, nch: A.buffer.numberOfChannels, bpm: A.bpm, beats: A.beats, isLoop: A.isLoop, key: A.key, generated: A.generated, downbeat: A.downbeat || 0, markers: A.markers || [], data: [] };
+      const m = { id: A.id, name: A.name, sr: A.buffer.sampleRate, len: A.buffer.length, nch: A.buffer.numberOfChannels, bpm: A.bpm, beats: A.beats, isLoop: A.isLoop, key: A.key, generated: A.generated, downbeat: A.downbeat || 0, markers: A.markers || [], beatmapped: !!A.beatmapped, revOf: A.revOf || null, data: [] };
       for (const ch of bufferChannels(A.buffer)) m.data.push(pushF32(ch));
       if (usedStems.has(A.id) && A.stems.state === 'done') {
         m.stems = {};
@@ -749,7 +835,7 @@ const Project = {
     for (const m of meta.assets) {
       const chs = m.data.map((o) => new Float32Array(ab, base + o, m.len).slice());
       const A = addAsset(m.name, makeBuffer(chs, m.sr), { id: m.id, bpm: m.bpm, beats: m.beats, isLoop: m.isLoop, key: m.key, generated: m.generated, downbeat: m.downbeat || 0 });
-      A.markers = m.markers || [];
+      A.markers = m.markers || []; A.beatmapped = !!m.beatmapped; if (m.revOf) A.revOf = m.revOf;
       if (!m.bpm) analyzeAsset(A);
       if (m.stems) {
         const bufs = {}; for (const k in m.stems) bufs[k] = makeBuffer(m.stems[k].map((o) => new Float32Array(ab, base + o, m.len).slice()), m.sr);
