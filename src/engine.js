@@ -1,0 +1,694 @@
+// ---------------------------------------------------------------------------
+// Project model, assets, history, audio engine
+// ---------------------------------------------------------------------------
+const TRACK_COLORS = ['#ffb13b', '#5ec2ff', '#ff6b8a', '#46d39a', '#b77dff', '#ff8f4a', '#4fd6d6', '#e6d84a', '#8fa8ff', '#ff6bd5'];
+const STEMS = [
+  { key: 'vocals', label: 'Vocals', color: 'stVocals' },
+  { key: 'melody', label: 'Melody', color: 'stMelody' },
+  { key: 'bass', label: 'Bass', color: 'stBass' },
+  { key: 'drums', label: 'Drums', color: 'stDrums' },
+];
+
+function newProject() {
+  return {
+    name: 'Untitled project', bpm: 105, bpb: 4, tracks: [],
+    loop: { on: false, start: 0, end: 16 }, metro: false, snap: 1, cursor: 0,
+    master: { vol: 0, limiter: true, low: 0, mid: 0, high: 0, rev: 2.2, dlyFb: 0.35, fx: [] },
+    markers: [],
+  };
+}
+function newTrack(name) {
+  const i = P.tracks.length;
+  return { id: uid('t'), name: name || 'Track ' + (i + 1), color: TRACK_COLORS[i % TRACK_COLORS.length], vol: 0, pan: 0, mute: false, solo: false, arm: false, low: 0, mid: 0, high: 0, comp: 0, rev: 0, dly: 0, clips: [], fx: [], env: { vol: [], pan: [], show: null }, pitch: 0 };
+}
+
+let P = newProject();
+const S = { assets: new Map(), view: 'arrange', selClip: null, selTrack: null, dirty: false, editAsset: null, lastSaved: null };
+const bus = { h: {}, on(e, f) { (this.h[e] = this.h[e] || []).push(f); }, emit(e, a) { (this.h[e] || []).forEach((f) => { try { f(a); } catch (err) { console.error(err); } }); } };
+
+const spb = () => 60 / P.bpm;
+function projectEndBeats() {
+  let e = 0;
+  for (const t of P.tracks) for (const c of t.clips) e = Math.max(e, c.start + c.len);
+  return e;
+}
+
+// ---- history ------------------------------------------------------------------
+const Hist = {
+  undo: [], redo: [],
+  push() { this.undo.push(JSON.stringify(P)); if (this.undo.length > 150) this.undo.shift(); this.redo = []; markDirty(); },
+  apply(from, to) {
+    if (!from.length) return false;
+    to.push(JSON.stringify(P));
+    const prev = P.bpm;
+    P = JSON.parse(from.pop());
+    if (prev !== P.bpm) $('#bpmInput').value = P.bpm;
+    S.selClip = null;
+    Engine.syncTracks(); Engine.refresh();
+    bus.emit('project'); markDirty();
+    return true;
+  },
+  doUndo() { if (this.apply(this.undo, this.redo)) status('Undo'); },
+  doRedo() { if (this.apply(this.redo, this.undo)) status('Redo'); },
+};
+function markDirty() { S.dirty = true; const s = $('#statusSave'); if (s) s.textContent = 'Unsaved changes'; Autosave.schedule(); }
+
+// ---- assets -------------------------------------------------------------------
+function addAsset(name, buffer, meta = {}) {
+  const A = {
+    id: meta.id || uid('a'), name, buffer, peaks: computePeaks(buffer),
+    bpm: meta.bpm || null, beats: meta.beats || null, isLoop: !!meta.isLoop, key: meta.key || null, generated: !!meta.generated,
+    stretch: new Map(), stems: { state: 'none', buffers: null, peaks: null, promise: null, ms: 0 },
+    version: 1, analyzing: false, undo: [], redo: [],
+  };
+  S.assets.set(A.id, A);
+  if (!A.bpm) analyzeAsset(A);
+  bus.emit('assets');
+  return A;
+}
+async function analyzeAsset(A) {
+  A.analyzing = true; bus.emit('assets');
+  try {
+    const ch = bufferChannels(A.buffer).map((c) => c.slice());
+    const r = await Pool.run('analyze', { ch, sr: A.buffer.sampleRate }, ch.map((c) => c.buffer));
+    A.bpm = r.bpm; A.beats = r.beats; A.isLoop = r.isLoop; A.key = r.key;
+  } catch (e) { console.warn(e); }
+  A.analyzing = false; bus.emit('assets'); bus.emit('assetMeta', A);
+}
+function assetChanged(A, newBuffer) {
+  if (newBuffer) A.buffer = newBuffer;
+  A.peaks = computePeaks(A.buffer);
+  A.stretch.clear();
+  if (A.stems.state !== 'none') A.stems = { state: 'none', buffers: null, peaks: null, promise: null, ms: 0 };
+  A.version++;
+  bus.emit('assets'); bus.emit('assetChanged', A);
+  Engine.refresh();
+  markDirty();
+}
+function removeAsset(A) {
+  Hist.push();
+  for (const t of P.tracks) t.clips = t.clips.filter((c) => c.asset !== A.id);
+  S.assets.delete(A.id);
+  if (S.editAsset === A.id) S.editAsset = null;
+  Engine.refresh(); bus.emit('assets'); bus.emit('project');
+}
+
+async function decodeFile(file) {
+  const ctx = Engine.ensure(false);
+  const ab = await file.arrayBuffer();
+  return await ctx.decodeAudioData(ab);
+}
+async function importFiles(files, placeAt) {
+  const out = [];
+  for (const f of files) {
+    if (/\.rush$/i.test(f.name)) { await Project.load(f); continue; }
+    status('Importing ' + f.name + '…');
+    try {
+      const buf = await decodeFile(f);
+      const A = addAsset(f.name.replace(/\.[^.]+$/, ''), buf);
+      out.push(A);
+      toast('Imported ' + f.name + ' · ' + fmtShort(buf.duration), 'ok');
+    } catch (e) {
+      toast(f.name + ' could not be decoded. Try WAV, MP3, FLAC, OGG or M4A.', 'err');
+    }
+  }
+  status('Ready');
+  return out;
+}
+
+// ---- tempo-synced buffers ------------------------------------------------------
+function stemBuffer(A, stem) { return stem ? (A.stems.buffers && A.stems.buffers[stem]) : A.buffer; }
+const trackOfClip = (clip) => P.tracks.find((t) => t.clips.includes(clip));
+function playBuffer(clip, track) {
+  const A = S.assets.get(clip.asset);
+  if (!A) return null;
+  const base = stemBuffer(A, clip.stem);
+  if (!base) return null;
+  const tr = track || trackOfClip(clip);
+  const semis = Math.round(((tr && tr.pitch) || 0) * 100) / 100;
+  const synced = !!(clip.sync && A.bpm);
+  const ratio = synced ? A.bpm / P.bpm : 1;
+  const srcDur = base.duration * ratio;
+  if (Math.abs(ratio - 1) < 0.0005 && !semis) return { buf: base, rate: 1, srcDur, A };
+  const key = (clip.stem || 'mix') + '@' + (synced ? P.bpm.toFixed(3) : 'free') + '#' + semis;
+  const c = A.stretch.get(key);
+  if (c && c !== 'pending') return { buf: c, rate: 1, srcDur, A };
+  if (!c) requestStretch(A, clip.stem, key, ratio, semis);
+  return { buf: base, rate: 1 / ratio, srcDur, A, pending: true };
+}
+const stretchJobs = new Set();
+function requestStretch(A, stem, key, ratio, semis = 0) {
+  A.stretch.set(key, 'pending');
+  const base = stemBuffer(A, stem);
+  const ch = bufferChannels(base).map((c) => c.slice());
+  const ver = A.version;
+  const job = Pool.run('sp', { ch, ratio, semis, sr: base.sampleRate }, ch.map((c) => c.buffer)).then((res) => {
+    if (A.version !== ver) return;
+    A.stretch.set(key, makeBuffer(res, base.sampleRate));
+    // keep the cache small
+    if (A.stretch.size > 10) { for (const k of A.stretch.keys()) { if (k !== key && !k.includes('@' + P.bpm.toFixed(3))) { A.stretch.delete(k); break; } } }
+    Engine.refreshSoon();
+    bus.emit('redraw');
+  }).catch((e) => { A.stretch.delete(key); console.warn(e); }).finally(() => stretchJobs.delete(job));
+  stretchJobs.add(job);
+}
+async function ensureStretched() {
+  for (const t of P.tracks) for (const c of t.clips) playBuffer(c);
+  while (stretchJobs.size) await Promise.all([...stretchJobs]);
+}
+function setBpm(nb) {
+  nb = clamp(Math.round(nb * 1000) / 1000, 40, 240);
+  if (!isFinite(nb) || nb === P.bpm) return;
+  Hist.push();
+  const ob = P.bpm;
+  for (const t of P.tracks) for (const c of t.clips) {
+    if (c.sync) c.offset *= ob / nb;
+    else c.len *= nb / ob;
+  }
+  P.bpm = nb;
+  $('#bpmInput').value = nb;
+  Engine.refresh();
+  bus.emit('project');
+}
+
+// ---- stem separation -------------------------------------------------------------
+async function separateAsset(A, onProgress) {
+  if (A.stems.state === 'done') return A.stems;
+  if (A.stems.promise) { A.stems.onProgress = onProgress; return A.stems.promise; }
+  const t0 = performance.now();
+  A.stems.state = 'running'; A.stems.onProgress = onProgress; A.stems.progress = 0;
+  bus.emit('assets');
+  const ver = A.version, buf = A.buffer, sr = buf.sampleRate, len = buf.length;
+  const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+  const H = 1024, chunk = Math.ceil(sr * 10 / H) * H, pad = 16 * H;
+  const out = { vocals: [new Float32Array(len), new Float32Array(len)], drums: [new Float32Array(len), new Float32Array(len)], bass: [new Float32Array(len), new Float32Array(len)], other: [new Float32Array(len), new Float32Array(len)] };
+  const jobs = [];
+  let done = 0;
+  const total = Math.ceil(len / chunk);
+  for (let s = 0; s < len; s += chunk) {
+    const e = Math.min(len, s + chunk), a = Math.max(0, s - pad), b = Math.min(len, e + pad);
+    const l = L.slice(a, b), r = R.slice(a, b);
+    jobs.push(Pool.run('separate', { L: l, R: r, sr }, [l.buffer, r.buffer]).then((res) => {
+      for (const k in out) {
+        out[k][0].set(res.stems[k][0].subarray(s - a, s - a + (e - s)), s);
+        out[k][1].set(res.stems[k][1].subarray(s - a, s - a + (e - s)), s);
+      }
+      done++;
+      A.stems.progress = done / total;
+      A.stems.onProgress && A.stems.onProgress(done / total);
+    }));
+  }
+  A.stems.promise = Promise.all(jobs).then(() => {
+    if (A.version !== ver) throw new Error('File changed during separation');
+    const bufs = {
+      vocals: makeBuffer(out.vocals, sr), melody: makeBuffer(out.other, sr),
+      bass: makeBuffer(out.bass, sr), drums: makeBuffer(out.drums, sr),
+    };
+    A.stems.buffers = bufs;
+    A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
+    A.stems.state = 'done'; A.stems.ms = performance.now() - t0; A.stems.promise = null;
+    bus.emit('assets'); bus.emit('stemsDone', A);
+    return A.stems;
+  }).catch((e) => { A.stems.state = 'none'; A.stems.promise = null; bus.emit('assets'); throw e; });
+  return A.stems.promise;
+}
+
+// ---- audio graph -------------------------------------------------------------------
+function makeImpulse(ctx, seconds, decay = 3) {
+  const sr = ctx.sampleRate, n = Math.max(1, Math.floor(sr * seconds)), b = ctx.createBuffer(2, n, sr);
+  for (let c = 0; c < 2; c++) {
+    const d = b.getChannelData(c);
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      lp = lp * 0.55 + (Math.random() * 2 - 1) * 0.45;   // darker tail
+      d[i] = lp * Math.pow(1 - t, decay) * (i < sr * 0.012 ? i / (sr * 0.012) : 1);
+    }
+  }
+  return b;
+}
+function buildMaster(ctx, dest) {
+  const m = {};
+  m.input = ctx.createGain();
+  m.low = ctx.createBiquadFilter(); m.low.type = 'lowshelf'; m.low.frequency.value = 110;
+  m.mid = ctx.createBiquadFilter(); m.mid.type = 'peaking'; m.mid.frequency.value = 1200; m.mid.Q.value = 0.8;
+  m.high = ctx.createBiquadFilter(); m.high.type = 'highshelf'; m.high.frequency.value = 8000;
+  m.gain = ctx.createGain();
+  m.limiter = ctx.createDynamicsCompressor();
+  m.out = ctx.createGain();
+  m.chain = new Plugins.Chain(ctx);
+  m.input.connect(m.chain.input); m.chain.output.connect(m.low); m.low.connect(m.mid).connect(m.high).connect(m.gain).connect(m.limiter).connect(m.out).connect(dest);
+  m.split = ctx.createChannelSplitter(2);
+  m.anL = ctx.createAnalyser(); m.anR = ctx.createAnalyser(); m.anL.fftSize = m.anR.fftSize = 2048;
+  m.spec = ctx.createAnalyser(); m.spec.fftSize = 8192; m.spec.smoothingTimeConstant = 0.75;
+  m.out.connect(m.split); m.split.connect(m.anL, 0); m.split.connect(m.anR, 1); m.out.connect(m.spec);
+  // reverb bus
+  m.revIn = ctx.createGain();
+  m.conv = ctx.createConvolver(); m.conv.buffer = makeImpulse(ctx, P.master.rev || 2.2);
+  m.revIn.connect(m.conv).connect(m.input);
+  // tempo-synced ping-pong delay bus (dotted eighth)
+  m.dlyIn = ctx.createGain();
+  m.dL = ctx.createDelay(4); m.dR = ctx.createDelay(4);
+  m.fb = ctx.createGain(); m.dlp = ctx.createBiquadFilter(); m.dlp.type = 'lowpass'; m.dlp.frequency.value = 4500;
+  const merge = ctx.createChannelMerger(2);
+  m.dlyIn.connect(m.dL); m.dL.connect(m.dR); m.dR.connect(m.dlp).connect(m.fb).connect(m.dL);
+  m.dL.connect(merge, 0, 0); m.dR.connect(merge, 0, 1); merge.connect(m.input);
+  applyMaster(m, ctx);
+  return m;
+}
+function applyMaster(m, ctx) {
+  const t = ctx.currentTime, M = P.master;
+  m.low.gain.setTargetAtTime(M.low, t, 0.01); m.mid.gain.setTargetAtTime(M.mid, t, 0.01); m.high.gain.setTargetAtTime(M.high, t, 0.01);
+  m.gain.gain.setTargetAtTime(dbToGain(M.vol), t, 0.01);
+  if (M.limiter) { m.limiter.threshold.value = -1.5; m.limiter.knee.value = 0; m.limiter.ratio.value = 20; m.limiter.attack.value = 0.002; m.limiter.release.value = 0.12; }
+  else { m.limiter.threshold.value = 0; m.limiter.ratio.value = 1; }
+  const d = spb() * 0.75;
+  m.dL.delayTime.setTargetAtTime(d, t, 0.02); m.dR.delayTime.setTargetAtTime(d, t, 0.02);
+  m.fb.gain.setTargetAtTime(M.dlyFb, t, 0.02);
+  m.chain.set(M.fx || []);
+}
+function buildTrack(ctx, master) {
+  const n = {};
+  n.input = ctx.createGain();
+  n.low = ctx.createBiquadFilter(); n.low.type = 'lowshelf'; n.low.frequency.value = 120;
+  n.mid = ctx.createBiquadFilter(); n.mid.type = 'peaking'; n.mid.frequency.value = 1000; n.mid.Q.value = 0.9;
+  n.high = ctx.createBiquadFilter(); n.high.type = 'highshelf'; n.high.frequency.value = 7000;
+  n.comp = ctx.createDynamicsCompressor(); n.makeup = ctx.createGain();
+  n.pan = ctx.createStereoPanner();
+  n.vol = ctx.createGain();
+  n.an = ctx.createAnalyser(); n.an.fftSize = 1024;
+  n.rev = ctx.createGain(); n.dly = ctx.createGain();
+  n.chain = new Plugins.Chain(ctx);
+  n.apan = ctx.createStereoPanner(); n.avol = ctx.createGain();
+  n.input.connect(n.low).connect(n.mid).connect(n.high).connect(n.comp).connect(n.makeup).connect(n.chain.input);
+  n.chain.output.connect(n.apan).connect(n.pan).connect(n.avol).connect(n.vol);
+  n.vol.connect(n.an); n.vol.connect(master.input); n.vol.connect(n.rev).connect(master.revIn); n.vol.connect(n.dly).connect(master.dlyIn);
+  return n;
+}
+function applyTrack(n, tr, soloOn, ctx) {
+  const t = ctx.currentTime;
+  n.low.gain.setTargetAtTime(tr.low, t, 0.01); n.mid.gain.setTargetAtTime(tr.mid, t, 0.01); n.high.gain.setTargetAtTime(tr.high, t, 0.01);
+  const c = tr.comp;
+  n.comp.threshold.value = -36 * c; n.comp.ratio.value = 1 + 7 * c; n.comp.knee.value = 8; n.comp.attack.value = 0.006; n.comp.release.value = 0.18;
+  n.makeup.gain.setTargetAtTime(dbToGain(c * 9), t, 0.01);
+  n.pan.pan.setTargetAtTime(tr.pan, t, 0.01);
+  const audible = !tr.mute && (!soloOn || tr.solo);
+  n.vol.gain.setTargetAtTime(audible ? dbToGain(tr.vol) : 0, t, 0.008);
+  n.rev.gain.setTargetAtTime(tr.rev, t, 0.01); n.dly.gain.setTargetAtTime(tr.dly, t, 0.01);
+  n.chain.set(tr.fx || []);
+}
+
+// ---- track envelopes (automation) ----
+function envAt(pts, beat, def) {
+  if (!pts || !pts.length) return def;
+  if (beat <= pts[0].b) return pts[0].v;
+  for (let i = 1; i < pts.length; i++) if (beat <= pts[i].b) { const a = pts[i - 1], b = pts[i]; return a.v + (b.v - a.v) * (beat - a.b) / Math.max(1e-9, b.b - a.b); }
+  return pts[pts.length - 1].v;
+}
+function scheduleAuto(ctx, nodes, a, b, when, fresh) {
+  const sp = spb();
+  for (const tr of P.tracks) {
+    const n = nodes.get(tr.id); if (!n) continue;
+    const env = tr.env || {};
+    for (const [param, pts, conv] of [[n.avol.gain, env.vol, dbToGain], [n.apan.pan, env.pan, (v) => v]]) {
+      if (fresh) param.cancelScheduledValues(0);
+      if (!pts || !pts.length) { if (fresh) param.setValueAtTime(conv(0), Math.max(0, when)); continue; }
+      param.setValueAtTime(conv(envAt(pts, a / sp, 0)), when);
+      // sample the curve on a 30 ms grid (plus exact points) so dB-shaped ramps sound as drawn
+      const times = [];
+      for (let t = a + 0.03; t < b; t += 0.03) times.push(t);
+      for (const pt of pts) { const t = pt.b * sp; if (t > a && t < b) times.push(t); }
+      times.sort((x, y) => x - y);
+      for (const t of times) param.linearRampToValueAtTime(conv(envAt(pts, t / sp, 0)), when + (t - a));
+      param.linearRampToValueAtTime(conv(envAt(pts, b / sp, 0)), when + (b - a));
+    }
+  }
+}
+
+// schedule clips into ctx. first=true: clips already sounding at `a` are started mid-way.
+function scheduleClips(ctx, nodes, a, b, when, first, list, capAtB) {
+  const sp = spb();
+  for (const tr of P.tracks) {
+    const n = nodes.get(tr.id);
+    if (!n) continue;
+    for (const clip of tr.clips) {
+      const cs = clip.start * sp, ce = cs + clip.len * sp;
+      const starts = cs >= a - 1e-9 && cs < b;
+      const running = first && cs < a && ce > a + 1e-4;
+      if (!starts && !running) continue;
+      const pb = playBuffer(clip, tr);
+      if (!pb) continue;
+      const s0 = Math.max(cs, a), s1 = capAtB ? Math.min(ce, b) : ce;
+      if (s1 - s0 < 1e-4) continue;
+      const local = s0 - cs, dur = s1 - s0;
+      let off = clip.offset + local;
+      if (clip.loop) { off = ((off % pb.srcDur) + pb.srcDur) % pb.srcDur; }
+      else if (off >= pb.srcDur) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = pb.buf; src.playbackRate.value = pb.rate;
+      if (clip.loop) { src.loop = true; src.loopStart = 0; src.loopEnd = pb.buf.duration; }
+      const g = ctx.createGain();
+      const t0 = when + (s0 - a);
+      const gl = dbToGain(clip.gain || 0), clen = clip.len * sp;
+      const fi = Math.min(clip.fadeIn || 0, clen), fo = Math.min(clip.fadeOut || 0, clen);
+      const env = (x) => gl * (fi > 0 ? Math.min(1, x / fi) : 1) * (fo > 0 ? Math.min(1, Math.max(0, (clen - x) / fo)) : 1);
+      const declick = local > 0.002 ? 0.004 : 0;
+      g.gain.setValueAtTime(declick ? 0 : env(local), t0);
+      if (declick) g.gain.linearRampToValueAtTime(env(local + declick), t0 + declick);
+      if (fi > 0 && local + declick < fi) g.gain.linearRampToValueAtTime(gl * (fo > 0 ? Math.min(1, (clen - fi) / fo) : 1), t0 + (fi - local));
+      const end = local + dur;
+      if (fo > 0 && end > clen - fo) {
+        const foStart = clen - fo;
+        if (foStart > local + declick) g.gain.setValueAtTime(env(foStart), t0 + (foStart - local));
+        g.gain.linearRampToValueAtTime(env(end), t0 + dur);
+      } else if (capAtB && s1 < ce) {
+        // cut at loop end: tiny release to avoid a click
+        g.gain.setValueAtTime(env(end - 0.004), t0 + dur - 0.004);
+        g.gain.linearRampToValueAtTime(0, t0 + dur);
+      }
+      src.connect(g).connect(n.input);
+      src.start(t0, off * pb.rate);
+      src.stop(t0 + dur + 0.001);
+      src.onended = () => { try { g.disconnect(); } catch (e) { } };
+      list && list.push(src);
+    }
+  }
+}
+
+const Engine = {
+  ctx: null, master: null, nodes: new Map(), playing: false, sources: [], segs: [], timer: null,
+  recording: false, rec: null, deckOut: null, previewSrc: null,
+  ensure(resume = true) {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC({ latencyHint: 'interactive' });
+      this.master = buildMaster(this.ctx, this.ctx.destination);
+      this.syncTracks();
+      $('#statusSr').textContent = (this.ctx.sampleRate / 1000).toFixed(1) + ' kHz';
+    }
+    if (resume && this.ctx.state === 'suspended') this.ctx.resume();
+    return this.ctx;
+  },
+  syncTracks() {
+    if (!this.ctx) return;
+    const ids = new Set(P.tracks.map((t) => t.id));
+    for (const [id, n] of this.nodes) if (!ids.has(id)) { try { n.vol.disconnect(); } catch (e) { } this.nodes.delete(id); }
+    for (const t of P.tracks) if (!this.nodes.has(t.id)) this.nodes.set(t.id, buildTrack(this.ctx, this.master));
+    this.applyAll();
+  },
+  applyAll() {
+    if (!this.ctx) return;
+    const soloOn = P.tracks.some((t) => t.solo);
+    for (const t of P.tracks) { const n = this.nodes.get(t.id); if (n) applyTrack(n, t, soloOn, this.ctx); }
+    applyMaster(this.master, this.ctx);
+  },
+  loopSec() { const s = spb(); return { on: P.loop.on && P.loop.end > P.loop.start, a: P.loop.start * s, b: P.loop.end * s }; },
+  play(fromBeat = P.cursor) {
+    const ctx = this.ensure();
+    if (this.playing) this.stopSources();
+    Deck.pause && Deck.pause();
+    this.syncTracks();
+    this.playing = true;
+    const L = this.loopSec();
+    let from = fromBeat * spb();
+    if (L.on && from >= L.b) from = L.a;
+    this.nextPos = from; this.nextWhen = ctx.currentTime + 0.06; this.first = true;
+    this.sources = []; this.segs = [];
+    this.pump();
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.pump(), 40);
+    bus.emit('transport');
+  },
+  pump() {
+    if (!this.playing) return;
+    const ctx = this.ctx, L = this.loopSec();
+    while (this.nextWhen < ctx.currentTime + 1.2) {
+      const a = this.nextPos;
+      const inLoop = L.on && a < L.b - 1e-6;
+      const b = inLoop ? L.b : a + 2;
+      const first = this.first || inLoop;
+      scheduleClips(ctx, this.nodes, a, b, this.nextWhen, first, this.sources, inLoop);
+      scheduleAuto(ctx, this.nodes, a, b, this.nextWhen, this.first);
+      if (P.metro || this.recording) this.clicks(a, b, this.nextWhen);
+      this.segs.push({ when: this.nextWhen, a, b });
+      this.nextWhen += b - a;
+      this.nextPos = inLoop ? L.a : b;
+      this.first = false;
+    }
+    const now = ctx.currentTime;
+    if (this.segs.length > 8) this.segs = this.segs.filter((s) => s.when + (s.b - s.a) > now - 1);
+    if (this.sources.length > 400) this.sources = this.sources.slice(-300);
+  },
+  clicks(a, b, when) {
+    const ctx = this.ctx, sp = spb();
+    const first = Math.ceil(a / sp - 1e-6);
+    for (let bt = first; bt * sp < b - 1e-6; bt++) {
+      const t = when + (bt * sp - a);
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = bt % P.bpb === 0 ? 1760 : 1180;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+      o.connect(g).connect(this.ctx.destination);
+      o.start(t); o.stop(t + 0.06);
+      this.sources.push(o);
+    }
+  },
+  posSec() {
+    if (!this.playing || !this.ctx) return P.cursor * spb();
+    const now = this.ctx.currentTime - (this.ctx.outputLatency || 0) * 0;
+    let seg = null;
+    for (const s of this.segs) if (now >= s.when) seg = s;
+    if (!seg) return this.segs.length ? this.segs[0].a : P.cursor * spb();
+    return Math.min(seg.b, seg.a + (now - seg.when));
+  },
+  posBeats() { return this.posSec() / spb(); },
+  stopSources() {
+    for (const s of this.sources) { try { s.stop(); } catch (e) { } }
+    this.sources = [];
+  },
+  pause() {
+    if (!this.playing) return;
+    const p = this.posBeats();
+    this.halt();
+    P.cursor = Math.max(0, p);
+    bus.emit('transport');
+  },
+  stop() {
+    const wasPlaying = this.playing;
+    this.halt();
+    if (!wasPlaying) P.cursor = 0;
+    bus.emit('transport');
+  },
+  halt() {
+    if (this.recording) this.stopRecord();
+    clearInterval(this.timer); this.timer = null;
+    this.stopSources();
+    this.playing = false;
+  },
+  toggle() { if (this.playing) this.pause(); else this.play(P.cursor); },
+  refresh() {
+    if (!this.ctx) return;
+    this.applyAll();
+    if (!this.playing || this.recording) return;
+    const p = this.posBeats();
+    this.stopSources();
+    this.playing = false;
+    this.play(p);
+  },
+  refreshSoon() { clearTimeout(this._rs); this._rs = setTimeout(() => this.refresh(), 30); },
+
+  // ---- recording ----
+  async startRecord() {
+    const ctx = this.ensure();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Recording needs microphone access, which this browser window does not allow.', 'err'); return; }
+    if (this.recording) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }
+    catch (e) { toast('Microphone access was blocked. Allow it in the browser to record.', 'err'); return; }
+    // capture node: AudioWorklet when allowed, ScriptProcessor fallback (e.g. pages opened from disk)
+    if (this.recMode == null) {
+      const code = "class R extends AudioWorkletProcessor{process(i){const x=i[0];if(x&&x.length)this.port.postMessage({t:currentTime,ch:x.map(c=>c.slice())});return true}};registerProcessor('rush-rec',R);";
+      this.recMode = 'sp';
+      for (const url of ['data:text/javascript;base64,' + btoa(code), URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))]) {
+        try { await ctx.audioWorklet.addModule(url); this.recMode = 'wl'; break; } catch (e) { }
+      }
+    }
+    let tr = P.tracks.find((t) => t.arm);
+    Hist.push();
+    if (!tr) { tr = newTrack('Recording'); tr.arm = true; P.tracks.push(tr); this.syncTracks(); bus.emit('project'); }
+    const src = ctx.createMediaStreamSource(stream);
+    const sink = ctx.createGain(); sink.gain.value = 0;
+    const chunks = [];
+    let node;
+    const startBeat = P.cursor;
+    this.recording = true;
+    this.play(startBeat);
+    const startT = this.segs.length ? this.segs[0].when : ctx.currentTime;
+    if (this.recMode === 'wl') {
+      node = new AudioWorkletNode(ctx, 'rush-rec', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = (e) => { if (e.data.t + 128 / ctx.sampleRate >= startT) chunks.push(e.data); };
+    } else {
+      node = ctx.createScriptProcessor(2048, 2, 1);
+      node.onaudioprocess = (e) => {
+        const ib = e.inputBuffer, t = e.playbackTime - ib.duration;
+        if (t + ib.duration < startT) return;
+        const ch = []; for (let c = 0; c < ib.numberOfChannels; c++) ch.push(ib.getChannelData(c).slice());
+        chunks.push({ t, ch });
+      };
+      node.port = { set onmessage(v) { node.onaudioprocess = v; } };
+    }
+    src.connect(node).connect(sink).connect(ctx.destination);
+    this.rec = { stream, src, node, sink, chunks, track: tr, startBeat, startT };
+    $('#tRec').setAttribute('aria-pressed', 'true');
+    status('Recording on ' + tr.name + '…');
+  },
+  stopRecord() {
+    const r = this.rec; if (!r) return;
+    this.recording = false; this.rec = null;
+    try { r.node.port.onmessage = null; r.src.disconnect(); r.node.disconnect(); r.sink.disconnect(); } catch (e) { }
+    r.stream.getTracks().forEach((t) => t.stop());
+    $('#tRec').setAttribute('aria-pressed', 'false');
+    const sr = this.ctx.sampleRate;
+    if (!r.chunks.length) { status('Nothing recorded'); return; }
+    const nch = Math.min(2, r.chunks[0].ch.length);
+    let total = 0; for (const c of r.chunks) total += c.ch[0].length;
+    const lat = Math.round(((this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0)) * sr);
+    const skip = Math.max(0, Math.round((r.startT - r.chunks[0].t) * sr)) + lat;
+    const chs = [];
+    for (let c = 0; c < nch; c++) {
+      const d = new Float32Array(Math.max(1, total - skip)); let o = -skip;
+      for (const ch of r.chunks) { const src = ch.ch[c] || ch.ch[0]; for (let i = 0; i < src.length; i++, o++) if (o >= 0 && o < d.length) d[o] = src[i]; }
+      chs.push(d);
+    }
+    const buf = makeBuffer(chs, sr);
+    const n = [...S.assets.values()].filter((a) => a.name.startsWith('Recording')).length + 1;
+    const A = addAsset('Recording ' + n, buf, { bpm: P.bpm, beats: buf.duration / spb(), isLoop: false });
+    r.track.clips.push({ id: uid('c'), asset: A.id, start: r.startBeat, len: buf.duration / spb(), offset: 0, sync: false, loop: false, gain: 0, fadeIn: 0, fadeOut: 0 });
+    bus.emit('project');
+    toast('Recorded ' + fmtShort(buf.duration) + ' to ' + r.track.name, 'ok');
+    status('Ready');
+  },
+
+  // ---- offline render ----
+  async render({ fromBeat = 0, toBeat = null, sr = null, tail = 2 } = {}) {
+    await ensureStretched();
+    const end = toBeat == null ? projectEndBeats() : toBeat;
+    if (end <= fromBeat) throw new Error('The project is empty. Add clips before exporting.');
+    sr = sr || (this.ctx ? this.ctx.sampleRate : 44100);
+    const a = fromBeat * spb(), b = end * spb();
+    const len = Math.ceil((b - a + tail) * sr);
+    const oc = new OfflineAudioContext(2, len, sr);
+    const master = buildMaster(oc, oc.destination);
+    const nodes = new Map();
+    const soloOn = P.tracks.some((t) => t.solo);
+    for (const t of P.tracks) { const n = buildTrack(oc, master); nodes.set(t.id, n); applyTrack(n, t, soloOn, oc); }
+    scheduleClips(oc, nodes, a, b, 0, true, null, true);
+    scheduleAuto(oc, nodes, a, b, 0, true);
+    return await oc.startRendering();
+  },
+  // plays a standalone buffer (editor preview); returns handle
+  playBuffer(buf, offset = 0, dur, onEnd) {
+    const ctx = this.ensure();
+    this.stopPreview();
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    src.connect(this.master.input);
+    src.start(ctx.currentTime + 0.02, offset, dur);
+    src.onended = () => { if (this.previewSrc === src) { this.previewSrc = null; onEnd && onEnd(); } };
+    this.previewSrc = src; src.t0 = ctx.currentTime + 0.02; src.off = offset;
+    return src;
+  },
+  stopPreview() { if (this.previewSrc) { const s = this.previewSrc; this.previewSrc = null; try { s.stop(); } catch (e) { } } },
+};
+
+// ---- project save / load (.rush) ------------------------------------------------
+const Project = {
+  async toBlob() {
+    const usedStems = new Set();
+    for (const t of P.tracks) for (const c of t.clips) if (c.stem) usedStems.add(c.asset);
+    const parts = [], metas = [];
+    let off = 0;
+    const pushF32 = (arr) => { parts.push(arr); const o = off; off += arr.byteLength; return o; };
+    for (const A of S.assets.values()) {
+      const m = { id: A.id, name: A.name, sr: A.buffer.sampleRate, len: A.buffer.length, nch: A.buffer.numberOfChannels, bpm: A.bpm, beats: A.beats, isLoop: A.isLoop, key: A.key, generated: A.generated, markers: A.markers || [], data: [] };
+      for (const ch of bufferChannels(A.buffer)) m.data.push(pushF32(ch));
+      if (usedStems.has(A.id) && A.stems.state === 'done') {
+        m.stems = {};
+        for (const k in A.stems.buffers) m.stems[k] = bufferChannels(A.stems.buffers[k]).map((ch) => pushF32(ch));
+      }
+      metas.push(m);
+    }
+    const json = new TextEncoder().encode(JSON.stringify({ app: 'Rush Music Studio', version: 1, project: P, assets: metas }));
+    const head = new ArrayBuffer(12), dv = new DataView(head);
+    dv.setUint32(0, 0x48535552, true); dv.setUint32(4, 1, true); dv.setUint32(8, json.byteLength, true);
+    const padLen = (4 - ((12 + json.byteLength) % 4)) % 4;
+    return new Blob([head, json, new Uint8Array(padLen), ...parts], { type: 'application/octet-stream' });
+  },
+  async fromBuffer(ab) {
+    const dv = new DataView(ab);
+    if (dv.getUint32(0, true) !== 0x48535552) throw new Error('This is not a Rush project file.');
+    const jl = dv.getUint32(8, true);
+    const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(ab, 12, jl)));
+    const base = 12 + jl + ((4 - ((12 + jl) % 4)) % 4);
+    Engine.halt(); Deck.unload && Deck.unload();
+    S.assets.clear();
+    for (const m of meta.assets) {
+      const chs = m.data.map((o) => new Float32Array(ab, base + o, m.len).slice());
+      const A = addAsset(m.name, makeBuffer(chs, m.sr), { id: m.id, bpm: m.bpm, beats: m.beats, isLoop: m.isLoop, key: m.key, generated: m.generated });
+      A.markers = m.markers || [];
+      if (!m.bpm) analyzeAsset(A);
+      if (m.stems) {
+        const bufs = {}; for (const k in m.stems) bufs[k] = makeBuffer(m.stems[k].map((o) => new Float32Array(ab, base + o, m.len).slice()), m.sr);
+        A.stems.buffers = bufs; A.stems.state = 'done'; A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
+      }
+    }
+    P = Object.assign(newProject(), meta.project);
+    P.master = Object.assign(newProject().master, meta.project.master || {});
+    P.markers = P.markers || [];
+    for (const t of P.tracks) { t.fx = t.fx || []; t.env = Object.assign({ vol: [], pan: [], show: null }, t.env || {}); t.pitch = t.pitch || 0; }
+    Hist.undo = []; Hist.redo = [];
+    $('#bpmInput').value = P.bpm; $('#projName').value = P.name; $('#bpbSel').value = P.bpb;
+    if (Engine.ctx) { Engine.nodes.clear(); Engine.master = buildMaster(Engine.ctx, Engine.ctx.destination); Engine.syncTracks(); }
+    S.selClip = null; S.editAsset = null;
+    bus.emit('assets'); bus.emit('project');
+  },
+  async save() {
+    status('Saving project…');
+    const blob = await this.toBlob();
+    downloadBlob(blob, safeName(P.name) + '.rush');
+    S.dirty = false; $('#statusSave').textContent = 'Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    status('Project saved (' + (blob.size / 1048576).toFixed(1) + ' MB)');
+  },
+  async load(file) {
+    try { await this.fromBuffer(await file.arrayBuffer()); toast('Opened ' + file.name, 'ok'); S.dirty = false; $('#statusSave').textContent = 'Opened'; }
+    catch (e) { toast(e.message || 'Could not open that project.', 'err'); }
+  },
+};
+
+// ---- autosave to IndexedDB (crash recovery) --------------------------------------
+const Autosave = {
+  t: null, busy: false, enabled: true,
+  db() {
+    return new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open('rush-music-studio', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('kv');
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+  },
+  schedule() { if (!this.enabled) return; clearTimeout(this.t); this.t = setTimeout(() => this.save(), 5000); },
+  async save() {
+    if (this.busy || S.booting) return; this.busy = true;
+    try {
+      const blob = await Project.toBlob();
+      const db = await this.db();
+      await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put({ blob, when: Date.now(), name: P.name }, 'autosave'); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    } catch (e) { /* storage unavailable: ignore */ }
+    this.busy = false;
+  },
+  async get() {
+    try {
+      const db = await this.db();
+      return await new Promise((res) => { const tx = db.transaction('kv', 'readonly'); const r = tx.objectStore('kv').get('autosave'); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); });
+    } catch (e) { return null; }
+  },
+};

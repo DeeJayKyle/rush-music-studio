@@ -1,0 +1,30 @@
+{
+  "name": "rush-music-studio",
+  "productName": "Rush Music Studio",
+  "version": "1.1.0",
+  "description": "Offline, open-source music studio: multitrack arranger, audio editor, plugin rack, real-time stem separation and mixer.",
+  "main": "main.js",
+  "license": "MIT",
+  "author": "Rush Music Studio contributors",
+  "homepage": "https://github.com/",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "32.2.0",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "org.rushmusicstudio.app",
+    "productName": "Rush Music Studio",
+    "directories": { "output": "release" },
+    "files": ["main.js", "app/**/*"],
+    "artifactName": "RushMusicStudio-${version}-${os}-${arch}.${ext}",
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }] },
+    "portable": { "artifactName": "RushMusicStudio-${version}-portable.exe" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "shortcutName": "Rush Music Studio" },
+    "mac": { "target": [{ "target": "dmg", "arch": ["universal"] }], "category": "public.app-category.music", "identity": null },
+    "linux": { "target": [{ "target": "AppImage", "arch": ["x64"] }, { "target": "deb", "arch": ["x64"] }], "category": "Audio", "maintainer": "Rush Music Studio contributors" }
+  }
+}
