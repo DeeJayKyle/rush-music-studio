@@ -31,6 +31,11 @@
     <symbol id="i-menu" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></symbol>
     <symbol id="i-cue" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M16 7.5A6 6 0 1 0 16 16.5"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 12h13M12 6l6 6-6 6M20 4v16"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5h2.4v14H6zM18 6v12l-8.5-6z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M15.6 5H18v14h-2.4zM6 6v12l8.5-6z"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M6 21V4h11l-2.5 4L17 12H6"/></symbol>
+    <symbol id="i-tempo" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 18l5-6 4 3 5-8 4 3"/></symbol>
+    <symbol id="i-follow" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 12h12M12 6l6 6-6 6M20 4v16"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></g></symbol>
   </defs>
 </svg>
@@ -66,19 +71,24 @@
       <button class="tbtn" id="tStop" title="Stop" aria-label="Stop"><svg><use href="#i-stop"/></svg></button>
       <button class="tbtn play" id="tPlay" title="Play / Pause (Space)" aria-label="Play"><svg><use href="#i-play"/></svg></button>
       <button class="tbtn rec" id="tRec" title="Record (R)" aria-label="Record" aria-pressed="false"><svg><use href="#i-rec"/></svg></button>
+      <button class="tbtn" id="tPrevM" title="Previous marker or tempo change (, or Ctrl+←)" aria-label="Previous marker"><svg><use href="#i-prev"/></svg></button>
+      <button class="tbtn" id="tNextM" title="Next marker or tempo change (. or Ctrl+→)" aria-label="Next marker"><svg><use href="#i-next"/></svg></button>
       <button class="tbtn" id="tLoop" title="Loop region (L)" aria-label="Loop" aria-pressed="false"><svg><use href="#i-loop"/></svg></button>
-      <button class="tbtn" id="tMetro" title="Metronome (M)" aria-label="Metronome" aria-pressed="false"><svg><use href="#i-metro"/></svg></button>
+      <button class="tbtn" id="tFollow" title="Follow playhead (F to fit project)" aria-label="Follow playhead" aria-pressed="true"><svg><use href="#i-follow"/></svg></button>
+      <button class="tbtn" id="tMetro" title="Metronome (C)" aria-label="Metronome" aria-pressed="false"><svg><use href="#i-metro"/></svg></button>
     </div>
     <div class="lcd">
       <div><label>Bar · Beat</label><span class="big" id="posBars">1.1.000</span></div>
       <div><label>Time</label><span class="mid" id="posTime">00:00.000</span></div>
-      <div><label>Tempo</label><input id="bpmInput" type="number" min="40" max="240" step="0.1" value="105" aria-label="Tempo in BPM"></div>
+      <div><label id="bpmLabel">Tempo</label><div class="bpm-row"><input id="bpmInput" type="number" min="20" max="300" step="0.01" value="105" aria-label="Tempo in BPM at the cursor"><span class="nudge"><button id="bpmUp" title="Tempo +0.1 (]) · Shift: +1" aria-label="Tempo up">▲</button><button id="bpmDown" title="Tempo −0.1 ([) · Shift: −1" aria-label="Tempo down">▼</button></span></div></div>
       <div><label>Meter</label><select id="bpbSel" aria-label="Beats per bar" style="border:0;background:transparent;padding:0;font:500 14px var(--font-mono)"><option>3</option><option selected>4</option><option>5</option><option>6</option><option>7</option></select></div>
     </div>
     <div class="tgroup">
       <button class="btn sm" id="tapBtn" title="Tap tempo">Tap</button>
-      <div class="field"><label for="snapSel">Snap</label>
-        <select id="snapSel"><option value="0">Off</option><option value="4">Bar</option><option value="1" selected>Beat</option><option value="0.5">1/8</option><option value="0.25">1/16</option></select></div>
+      <button class="btn sm" id="addTempoBtn" title="Insert a tempo change at the cursor (T)"><svg><use href="#i-tempo"/></svg>Tempo</button>
+      <button class="btn sm" id="addMarkerBtn" title="Insert a marker at the cursor (M)"><svg><use href="#i-flag"/></svg>Marker</button>
+      <div class="field"><label for="snapSel">Grid</label>
+        <select id="snapSel" title="Grid spacing"><option value="0">Off</option><option value="16">4 bars</option><option value="8">2 bars</option><option value="4">Bar</option><option value="2">1/2 note</option><option value="1" selected>Beat (1/4)</option><option value="0.6666666666666666">1/4 triplet</option><option value="0.5">1/8</option><option value="0.3333333333333333">1/8 triplet</option><option value="0.25">1/16</option><option value="0.16666666666666666">1/16 triplet</option><option value="0.125">1/32</option></select></div>
     </div>
     <div class="spacer"></div>
     <canvas class="meter-mini" id="masterMini" width="240" height="44" aria-label="Master level"></canvas>
@@ -109,6 +119,8 @@
       <!-- ARRANGE -->
       <div class="view" id="view-arrange">
         <div class="arrange">
+          <div class="corner corner-top"><span class="ov-label">Overview</span><span class="ov-tempo" id="ovTempo">♩ 105.0</span></div>
+          <div class="overview-wrap" id="ovWrap" title="Click or drag to jump around the project"><canvas id="ovCanvas"></canvas></div>
           <div class="corner">
             <button class="btn sm" id="addTrack"><svg><use href="#i-plus"/></svg>Track</button>
             <button class="icon-btn" id="zOut" title="Zoom out (−)" aria-label="Zoom out"><svg><use href="#i-zout"/></svg></button>

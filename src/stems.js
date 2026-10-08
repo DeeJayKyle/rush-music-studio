@@ -273,7 +273,7 @@ const Deck = (() => {
     const A = D.A;
     for (const s of STEMS) {
       const t = newTrack(A.name + ' · ' + s.label); t.color = getComputedStyle(document.documentElement).getPropertyValue('--st-' + s.key).trim() || t.color;
-      const c = Arrange.clipFor(A, 0, s.key); c.sync = false; c.loop = false; c.len = A.buffer.duration / spb();
+      const c = Arrange.clipFor(A, 0, s.key);
       t.clips.push(c); P.tracks.push(t);
     }
     Engine.syncTracks(); bus.emit('project');

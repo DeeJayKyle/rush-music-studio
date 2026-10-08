@@ -3,7 +3,7 @@ src = 'src'
 r = lambda f: open(os.path.join(src, f), encoding='utf-8').read()
 css = r('styles.css'); body = r('body.html')
 worker = r('fft.js') + '\n' + r('worker.js')
-app = '\n'.join(r(f) for f in ['fft.js','util.js','plugins.js','engine.js','chainer.js','looplab.js','arrange.js','editor.js','stems.js','mixer.js','main.js'])
+app = '\n'.join(r(f) for f in ['fft.js','util.js','plugins.js','engine.js','tempo.js','chainer.js','looplab.js','arrange.js','editor.js','stems.js','mixer.js','main.js'])
 for name, code in [('worker', worker), ('app', app)]:
     assert '</script' not in code.lower(), name
 app = '"use strict";\n' + app

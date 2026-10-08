@@ -148,6 +148,7 @@ function decimate(ch, sr) {
   return { x, sr: sr / 2 };
 }
 
+const ONSET_LAG = 0.028;   // onset detector fires ~one window early
 function analyze(ch, sr) {
   const d = decimate(ch, sr);
   const x = d.x, fs = d.sr, dur = ch[0].length / sr;
@@ -161,21 +162,23 @@ function analyze(ch, sr) {
   const frames = Math.max(1, Math.floor((b - a - N) / H));
   // SuperFlux-style onset strength: log magnitude, compared with the max of
   // neighbouring bins two frames earlier (suppresses vibrato / pitch glides)
-  const env = new Float64Array(frames);
+  const env = new Float64Array(frames), envLow = new Float64Array(frames);
+  const lowBin = Math.max(2, Math.round(180 * N / fs)), prevLow = new Float64Array(64);
   const hist = [new Float64Array(B), new Float64Array(B)];
   const cur = new Float64Array(B);
   for (let f = 0; f < frames; f++) {
     const s = a + f * H;
     for (let n = 0; n < N; n++) { re[n] = x[s + n] * win[n]; im[n] = 0; }
     FFT.transform(re, im, false);
-    for (let k = 0; k < B; k++) cur[k] = Math.log1p(100 * Math.sqrt(re[k] * re[k] + im[k] * im[k]));
+    let lowLin = 0;
+    for (let k = 0; k < B; k++) { const mg = Math.sqrt(re[k] * re[k] + im[k] * im[k]); cur[k] = Math.log1p(100 * mg); if (k >= 1 && k <= lowBin) { const d = mg - prevLow[k]; if (d > 0) lowLin += d; prevLow[k] = mg; } }
     const ref = hist[f % 2];
     let flux = 0;
     if (f >= 2) for (let k = 1; k < B; k++) {
       let mx = ref[k]; for (let j = Math.max(0, k - 3); j <= Math.min(B - 1, k + 3); j++) if (ref[j] > mx) mx = ref[j];
       const dd = cur[k] - mx; if (dd > 0) flux += dd;
     }
-    env[f] = flux;
+    env[f] = flux; envLow[f] = lowLin;
     hist[f % 2].set(cur);
   }
   const fps = fs / H;
@@ -213,6 +216,20 @@ function analyze(ch, sr) {
   }
   while (best < 70) best *= 2;
   while (best > 180) best /= 2;
+  // Beat phase: where the first beat falls (so songs can be lined up on the bar grid)
+  let firstBeat = 0;
+  {
+    const lagF = fps * 60 / best;
+    // kick-weighted onset curve (low band), local mean removed
+    const lo = new Float64Array(frames); let acc2 = 0;
+    for (let i = 0; i < frames; i++) { acc2 += envLow[i]; if (i >= W) acc2 -= envLow[i - W]; lo[i] = Math.max(0, envLow[i] - acc2 / Math.min(i + 1, W)); }
+    const atE = (f) => { const i = Math.floor(f), fr = f - i; if (i < 0 || i + 1 >= frames) return 0; return lo[i] * (1 - fr) + lo[i + 1] * fr; };
+    let bp = 0, bs = -1;
+    for (let p = 0; p < lagF; p += 0.25) { let sc = 0; for (let f = p; f < frames; f += lagF) sc += atE(f); if (sc > bs) { bs = sc; bp = p; } }
+    const period = 60 / best;
+    const t = (a + bp * H) / fs + ONSET_LAG;
+    firstBeat = ((t % period) + period) % period;
+  }
   // Loop detection: an exact number of beats in the file
   let isLoop = false, beats = dur * best / 60;
   if (dur < 32) {
@@ -267,47 +284,64 @@ function analyze(ch, sr) {
     const camMaj = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1], camMin = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10];
     key = { name: names[bt] + (bm ? ' major' : ' minor'), short: names[bt] + (bm ? '' : 'm'), camelot: (bm ? camMaj[bt] + 'B' : camMin[bt] + 'A'), confidence: bk };
   }
-  return { bpm: best, beats, isLoop, key };
+  if (isLoop) firstBeat = 0;
+  return { bpm: best, beats, isLoop, key, firstBeat };
 }
 
 // ---- WSOLA time-stretch (pitch preserved) ---------------------------------
+// pad both ends (circularly for loops) so the first and last frames aren't faded, then trim
+function wsolaPadded(chs, ratio, sr, circular) {
+  const n = chs[0].length, Pd = Math.min(sr >= 88000 ? 4096 : 2048, n);
+  const padded = chs.map((x) => {
+    const y = new Float32Array(n + 2 * Pd);
+    if (circular) { y.set(x.subarray(n - Pd), 0); y.set(x.subarray(0, Pd), n + Pd); }
+    y.set(x, Pd);
+    return y;
+  });
+  const out = wsola(padded, ratio, sr);
+  const s0 = Math.round(Pd * ratio), len = Math.max(1, Math.round(n * ratio));
+  return out.map((d) => d.slice(s0, s0 + len));
+}
 function wsola(chs, ratio, sr) {
-  const N = sr >= 88000 ? 4096 : 2048, Hs = N >> 1, n = chs[0].length;
+  // WSOLA with 75 % overlap (every transient lands in several frames, so none are dropped),
+  // a tight search window (timing stays within a few ms of the grid) and a mild bias
+  // towards the nominal position so drum hits stay on the beat.
+  const big = sr >= 88000;
+  const N = big ? 4096 : 2048, Hs = N >> 2, n = chs[0].length;
   const outLen = Math.max(1, Math.round(n * ratio));
-  const Ha = Hs / ratio, S = sr >= 88000 ? 1024 : 512;
+  const Ha = Hs / ratio, S = big ? 256 : 128;
   const win = FFT.hann(N);
   let mono = chs[0];
   if (chs.length > 1) { mono = new Float32Array(n); for (let i = 0; i < n; i++) mono[i] = (chs[0][i] + chs[1][i]) * 0.5; }
   const out = chs.map(() => new Float32Array(outLen + N));
+  const norm = new Float32Array(outLen + N);
   const at = (i) => (i >= 0 && i < n ? mono[i] : 0);
+  const L = N >> 1;                       // correlate over the first half of the frame
   let prevIn = 0;
-  const half = N >> 1;
   for (let k = 0; k * Hs < outLen; k++) {
     const nominal = Math.round(k * Ha);
     let best = nominal;
     if (k > 0) {
-      const target = prevIn + Hs;
-      const lo = nominal - S, hi = nominal + S;
+      const target = prevIn + Hs;          // where the previous frame naturally continues
       const score = (cand, stride) => {
-        let dot = 0, en = 1e-9;
-        for (let i = 0; i < half; i += stride) { const v = at(cand + i); dot += v * at(target + i); en += v * v; }
-        return dot / Math.sqrt(en);
+        let dot = 0, e1 = 1e-9, e2 = 1e-9;
+        for (let i = 0; i < L; i += stride) { const v = at(cand + i), w = at(target + i); dot += v * w; e1 += v * v; e2 += w * w; }
+        return dot / Math.sqrt(e1 * e2) - 1.2 * Math.abs(cand - nominal) / S;
       };
       let bs = -Infinity;
-      for (let c = lo; c <= hi; c += 8) { const s = score(c, 4); if (s > bs) { bs = s; best = c; } }
+      for (let c = nominal - S; c <= nominal + S; c += 4) { const sc = score(c, 4); if (sc > bs) { bs = sc; best = c; } }
       const c0 = best; bs = -Infinity;
-      for (let c = c0 - 8; c <= c0 + 8; c++) { const s = score(c, 1); if (s > bs) { bs = s; best = c; } }
+      for (let c = c0 - 4; c <= c0 + 4; c++) { const sc = score(c, 1); if (sc > bs) { bs = sc; best = c; } }
     }
     const o = k * Hs;
     for (let c = 0; c < chs.length; c++) {
       const src = chs[c], dst = out[c];
       for (let i = 0; i < N; i++) { const idx = best + i; if (idx >= 0 && idx < n) dst[o + i] += src[idx] * win[i]; }
     }
+    for (let i = 0; i < N; i++) norm[o + i] += win[i];
     prevIn = best;
   }
-  // first half-frame only received one window: compensate
-  for (const d of out) for (let i = 0; i < half && i < outLen; i++) { const w = win[i + 0]; d[i] = w > 0.05 ? d[i] / w : d[i]; }
-  return out.map((d) => d.subarray(0, outLen).slice());
+  return out.map((d) => { const r = new Float32Array(outLen); for (let i = 0; i < outLen; i++) r[i] = d[i] / Math.max(norm[i], 0.15); return r; });
 }
 
 function resample(chs, outLen) {
@@ -323,14 +357,14 @@ function resample(chs, outLen) {
   });
 }
 
-function stretchPitch(chs, ratio, semis, sr) {
-  if (!semis) return wsola(chs, ratio, sr);
+function stretchPitch(chs, ratio, semis, sr, loop) {
+  if (!semis) return wsolaPadded(chs, ratio, sr, loop);
   const f = Math.pow(2, semis / 12);
-  return resample(wsola(chs, ratio * f, sr), Math.max(1, Math.round(chs[0].length * ratio)));
+  return resample(wsolaPadded(chs, ratio * f, sr, loop), Math.max(1, Math.round(chs[0].length * ratio)));
 }
 function pitchShift(chs, semis, sr) {
   const f = Math.pow(2, semis / 12);
-  const st = wsola(chs, f, sr);
+  const st = wsolaPadded(chs, f, sr, false);
   return resample(st, chs[0].length);
 }
 
@@ -419,9 +453,9 @@ self.onmessage = (ev) => {
     } else if (m.type === 'analyze') {
       result = analyze(m.ch, m.sr);
     } else if (m.type === 'stretch') {
-      result = wsola(m.ch, m.ratio, m.sr); transfer = result.map((a) => a.buffer);
+      result = wsolaPadded(m.ch, m.ratio, m.sr, false); transfer = result.map((a) => a.buffer);
     } else if (m.type === 'sp') {
-      result = stretchPitch(m.ch, m.ratio, m.semis, m.sr); transfer = result.map((a) => a.buffer);
+      result = stretchPitch(m.ch, m.ratio, m.semis, m.sr, m.loop); transfer = result.map((a) => a.buffer);
     } else if (m.type === 'pitch') {
       result = pitchShift(m.ch, m.semis, m.sr); transfer = result.map((a) => a.buffer);
     } else if (m.type === 'denoise') {

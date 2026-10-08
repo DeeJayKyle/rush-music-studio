@@ -40,8 +40,8 @@ function renderPool() {
     }
     if (A.stems.state === 'done') tags.push(el('span', { class: 'tag stems' }, 'stems'));
     if (A.stems.state === 'running') tags.push(el('span', { class: 'tag' }, 'separating…'));
-    const add = el('button', { class: 'icon-btn', title: 'Add to a new track at the cursor', 'aria-label': 'Add to arrangement' }, icon('plus'));
-    add.addEventListener('click', (e) => { e.stopPropagation(); Arrange.placeAsset(A, P.tracks.length, P.cursor); setView('arrange'); });
+    const add = el('button', { class: 'icon-btn', title: 'Add to mix: new track after the last song, crossfaded', 'aria-label': 'Add to mix' }, icon('plus'));
+    add.addEventListener('click', (e) => { e.stopPropagation(); setView('arrange'); Arrange.addToMix(A); });
     const ed = el('button', { class: 'icon-btn', title: 'Open in Editor', 'aria-label': 'Open in Editor' }, icon('edit'));
     ed.addEventListener('click', (e) => { e.stopPropagation(); Editor.open(A.id); });
     const st = el('button', { class: 'icon-btn', title: 'Separate stems', 'aria-label': 'Separate stems' }, icon('stems'));
@@ -55,7 +55,8 @@ function renderPool() {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
-        { label: 'Add to new track', action: () => { Arrange.placeAsset(A, P.tracks.length, P.cursor); setView('arrange'); } },
+        { label: 'Add to mix (crossfaded after the last song)', action: () => { setView('arrange'); Arrange.addToMix(A); } },
+        { label: 'Add to new track at the cursor', action: () => { Arrange.placeAsset(A, P.tracks.length, P.cursor); setView('arrange'); } },
         { label: 'Open in Editor', action: () => Editor.open(A.id) },
         { label: 'Load to stems deck', action: () => { setView('stems'); Deck.load(A.id); } },
         { label: 'Preview', action: () => { Engine.halt(); Engine.playBuffer(A.buffer); } },
@@ -70,7 +71,7 @@ function renderPool() {
   }
   updateLen();
 }
-function updateLen() { const e = projectEndBeats(); $('#statusLen').textContent = 'Length ' + fmtShort(e * spb()) + ' · ' + P.tracks.length + ' tracks'; }
+function updateLen() { const e = projectEndBeats(); $('#statusLen').textContent = 'Length ' + fmtShort(T.b2s(e)) + ' · ' + P.tracks.length + ' tracks'; }
 
 // ---- menus ------------------------------------------------------------------------
 const MENUS = {
@@ -96,10 +97,15 @@ const MENUS = {
     { label: 'Delete clip', key: 'Del', action: () => Arrange.key({ key: 'Delete' }) },
     '-',
     { label: 'Add track', action: () => Arrange.addTrack() },
-    { label: 'Insert marker', key: 'Shift+M', action: () => Arrange.addMarker(P.cursor) },
+    { label: 'Insert tempo change at cursor…', key: 'T', action: () => { setView('arrange'); Arrange.tempoDialog(null, P.cursor); } },
+    { label: 'Insert marker at cursor', key: 'M', action: () => Arrange.addMarker(P.cursor) },
+    { label: 'Crossfade all overlapping clips', key: 'Shift+X', action: () => Arrange.crossfadeAll() },
+    { label: 'Mixtape settings…', action: () => Arrange.mixSettings() },
+    { label: 'Go to…', key: 'Ctrl+G', action: goTo },
+    '-',
     { label: 'Track effects…', key: 'Ctrl+K', action: () => { const t = P.tracks.find((x) => x.id === S.selTrack) || P.tracks[0]; if (t) Chainer.forTrack(t); } },
     { label: 'Master effects…', action: () => Chainer.forMaster() },
-    { label: 'Project tempo…', action: tempoDialog },
+    { label: 'Starting tempo…', action: () => Arrange.tempoDialog(T.list()[0]) },
   ],
   process: () => [{ label: 'Editor', header: true }, ...Editor.processMenuItems(), '-', { label: 'Effects', header: true }, ...Editor.fxMenuItems()].map((it) => (typeof it === 'object' && it.action ? Object.assign({}, it, { action: () => { if (!Editor.asset) { Editor.ensure(); } setView('editor'); it.action(); } }) : it)),
   help: () => [
@@ -107,8 +113,37 @@ const MENUS = {
     { label: 'About Rush Music Studio', action: showAbout },
   ],
 };
-async function tempoDialog() { const r = await showDialog({ title: 'Project tempo', fields: [{ id: 'b', label: 'BPM', type: 'number', value: P.bpm, step: 0.01, min: 40, max: 240 }] }); if (r) setBpm(r.b); }
+async function goTo() {
+  const r = await showDialog({ title: 'Go to', desc: 'Type a bar (e.g. 33 or 33.3) or a time (e.g. 4:30).', fields: [{ id: 'p', label: 'Position', value: fmtBars(P.cursor, P.bpb).replace(/\.000$/, '') }], ok: 'Go' });
+  if (!r || !r.p) return;
+  const v = r.p.trim();
+  let b = null;
+  const tm = v.match(/^(\d+):(\d+(?:\.\d+)?)$/);
+  if (tm) b = T.s2b(+tm[1] * 60 + +tm[2]);
+  else { const m = v.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/); if (m) b = (m[1] - 1) * P.bpb + (m[2] ? m[2] - 1 : 0) + (m[3] ? m[3] / 1000 : 0); }
+  if (b == null) { toast('Use a bar like 33.3 or a time like 4:30.', 'err'); return; }
+  setView('arrange'); Arrange.setCursor(b);
+}
 function showShortcuts() {
+  const groups = [
+    ['Transport', [['Space', 'Play / pause'], ['Home / End', 'Start / end of project'], ['R', 'Record'], ['L', 'Loop on/off'], ['C', 'Metronome'], ['[  ]', 'Tempo −/+ 0.1 BPM (Shift: 1 BPM)'], ['Ctrl+G', 'Go to bar or time']]],
+    ['Navigate', [['← →', 'Move cursor by snap (Shift: by bar)'], ['Ctrl+← / Ctrl+→', 'Previous / next marker or tempo change'], [', .', 'Previous / next marker or tempo change'], ['Tab / Shift+Tab', 'Next / previous clip'], ['↑ ↓', 'Zoom in / out'], ['Ctrl+↑ / Ctrl+↓', 'Taller / shorter tracks'], ['F', 'Fit whole project'], ['Z', 'Zoom to selected clip or loop'], ['PgUp / PgDn', 'Page left / right']]],
+    ['Mouse & touchpad', [['Wheel', 'Scroll tracks'], ['Shift+wheel / swipe', 'Scroll left / right'], ['Ctrl+wheel / pinch', 'Zoom'], ['Alt+wheel', 'Track height'], ['Middle-drag', 'Pan'], ['Overview strip', 'Click or drag to jump'], ['Double-click ruler', 'Loop that bar'], ['Double-click tempo lane', 'Add tempo change']]],
+    ['Edit', [['Double-click clip / Alt+Enter', 'Clip properties (tempo, beat grid, pitch)'], ['Shift+↑ / Shift+↓', 'Clip pitch ±1 semitone'], ['T / Shift+T', 'Insert / edit tempo change'], ['M', 'Insert marker'], ['E / Shift+E', 'Clip effects / track effects'], ['X / Shift+X', 'Crossfade clip / all overlaps'], ['S', 'Split'], ['Ctrl+C X V', 'Copy, cut, paste clip'], ['Ctrl+D', 'Duplicate clip'], ['Alt+← →', 'Nudge clip'], ['Alt-drag', 'Copy clip'], ['Shift-drag', 'Ignore snap'], ['V / P', 'Volume / pan envelope'], ['Del', 'Delete clip']]],
+    ['App', [['1 2 3 4', 'Arrange, Editor, Stems, Mixer'], ['Ctrl+K', 'Effects chain'], ['Ctrl+S / Ctrl+O', 'Save / open'], ['Ctrl+I', 'Import audio'], ['Ctrl+E', 'Export mix'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['?', 'This list']]],
+  ];
+  const bg = el('div', { class: 'modal-bg' });
+  const close = () => { bg.remove(); document.removeEventListener('keydown', esc, true); };
+  const esc = (e) => { if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', esc, true);
+  const box = el('div', { class: 'modal shortcuts', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Keyboard shortcuts' },
+    el('header', {}, el('h3', {}, 'Keyboard, mouse & touchpad'), el('p', {}, 'Rush is built to be driven from the keyboard while you mix.')),
+    el('div', { class: 'sc-grid' }, groups.map(([g, rows]) => el('section', {}, el('h4', {}, g), el('dl', {}, rows.map(([k, d]) => [el('dt', {}, el('kbd', {}, k)), el('dd', {}, d)]))))),
+    el('footer', {}, el('div', { class: 'spacer' }), el('button', { class: 'btn primary', onclick: close }, 'Close')));
+  bg.addEventListener('pointerdown', (e) => { if (e.target === bg) close(); });
+  bg.append(box); document.body.append(bg);
+}
+function showShortcutsOld() {
   showDialog({ title: 'Keyboard shortcuts', cancel: null, ok: 'Close', desc: 'Ctrl+K effects (Plug-in Chainer) · Shift+M insert marker · , and . jump between markers · Editor: M marker, R region from selection · Space play/pause · Home go to start · R record · L loop · M metronome · 1–4 switch view · Ctrl+S save · Ctrl+O open · Ctrl+I import · Ctrl+E export · Ctrl+Z/Y undo/redo. Arrange: S split, Ctrl+D duplicate, Del delete, ←/→ nudge, +/− zoom, Alt-drag copies a clip, Shift-drag ignores snap, drag in the ruler to set a loop. Editor: drag to select, Shift-click extends, Ctrl+X/C/V, Ctrl+T trim, Ctrl+A select all, wheel scrolls, Ctrl+wheel zooms. Stems: Z vocals, X melody, C bass, V drums.' });
 }
 function showAbout() {
@@ -137,7 +172,7 @@ async function exportMix(toMedia) {
   try {
     const buf = await Engine.render(opts.range === 'loop' ? { fromBeat: P.loop.start, toBeat: P.loop.end, tail: opts.tail ? 2 : 0 } : { tail: opts.tail ? 2 : 0 });
     const secs = (performance.now() - t0) / 1000;
-    if (toMedia === true) { addAsset(P.name + ' (mix)', buf, { bpm: P.bpm, beats: buf.duration / spb() }); toast('Bounced mix to Media', 'ok'); }
+    if (toMedia === true) { addAsset(P.name + ' (mix)', buf, { bpm: P.bpm, beats: buf.duration * P.bpm / 60 }); toast('Bounced mix to Media', 'ok'); }
     else downloadBlob(encodeWav(bufferChannels(buf), buf.sampleRate, +opts.bits), safeName(P.name) + '.wav');
     status('Rendered ' + fmtShort(buf.duration) + ' in ' + secs.toFixed(1) + ' s (' + (buf.duration / secs).toFixed(0) + '× real-time)');
   } catch (e) { toast(e.message, 'err'); status('Export failed'); }
@@ -154,15 +189,25 @@ function updateTransportUI() {
   const pb = $('#tPlay'); pb.innerHTML = ''; pb.append(icon(Engine.playing ? 'pause' : 'play')); pb.setAttribute('aria-label', Engine.playing ? 'Pause' : 'Play');
   $('#tLoop').setAttribute('aria-pressed', String(P.loop.on));
   $('#tMetro').setAttribute('aria-pressed', String(P.metro));
+  $('#tFollow').setAttribute('aria-pressed', String(!!S.follow));
+  showTempo(Engine.playing ? Engine.posBeats() : P.cursor);
   $('#tRec').setAttribute('aria-pressed', String(Engine.recording));
   $('#snapSel').value = String(P.snap);
   updatePos();
 }
+function showTempo(b) {
+  const v = T.bpmAt(b), L = T.list(), i = T.indexAt(b), g = T.build()[i];
+  const inp = $('#bpmInput');
+  if (document.activeElement !== inp) inp.value = +v.toFixed(2);
+  $('#bpmLabel').textContent = g && g.ramp ? 'Tempo ↗' : L.length > 1 ? 'Tempo · ' + (i + 1) + '/' + L.length : 'Tempo';
+  const ov = $('#ovTempo'); if (ov) ov.textContent = '♩ ' + v.toFixed(1);
+}
 function updatePos() {
   const b = Engine.playing ? Engine.posBeats() : P.cursor;
   $('#posBars').textContent = fmtBars(b, P.bpb);
-  $('#posTime').textContent = fmtTime(b * spb());
+  $('#posTime').textContent = fmtTime(T.b2s(b));
 }
+function nudgeTempo(d) { setBpm(Math.round((T.bpmAt(Engine.playing ? Engine.posBeats() : P.cursor) + d) * 100) / 100); status('Tempo ' + T.bpmAt(P.cursor).toFixed(2) + ' BPM'); }
 const taps = [];
 function tap() {
   const t = performance.now();
@@ -187,6 +232,14 @@ function bindShell() {
   $('#tRec').addEventListener('click', () => { if (Engine.recording) Engine.pause(); else Engine.startRecord(); });
   $('#tLoop').addEventListener('click', () => { toggleLoop(); });
   $('#tMetro').addEventListener('click', () => { P.metro = !P.metro; bus.emit('transport'); markDirty(); });
+  $('#tFollow').addEventListener('click', () => { S.follow = !S.follow; bus.emit('transport'); status(S.follow ? 'The view follows the playhead' : 'The view stays put while playing'); });
+  $('#tPrevM').addEventListener('click', () => { setView('arrange'); Arrange.jumpMarker(-1); });
+  $('#tNextM').addEventListener('click', () => { setView('arrange'); Arrange.jumpMarker(1); });
+  $('#addTempoBtn').addEventListener('click', () => { setView('arrange'); Arrange.tempoDialog(null, P.cursor); });
+  $('#addMarkerBtn').addEventListener('click', () => { setView('arrange'); Arrange.addMarker(P.cursor); });
+  $('#bpmUp').addEventListener('click', (e) => nudgeTempo(e.shiftKey ? 1 : 0.1));
+  $('#bpmDown').addEventListener('click', (e) => nudgeTempo(e.shiftKey ? -1 : -0.1));
+  $('#bpmInput').addEventListener('wheel', (e) => { e.preventDefault(); nudgeTempo((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 1 : 0.1)); }, { passive: false });
   $('#bpmInput').addEventListener('change', (e) => setBpm(parseFloat(e.target.value)));
   $('#bpmInput').addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); });
   $('#bpbSel').addEventListener('change', (e) => { Hist.push(); P.bpb = +e.target.value; bus.emit('project'); });
@@ -217,10 +270,11 @@ async function generateLoop() {
   const style = $('#llStyle').value, part = $('#llPart').value, key = $('#llKey').value, bars = +$('#llBars').value;
   const btn = $('#llGen'); btn.disabled = true;
   try {
-    const buf = await LoopLab.generate({ style, part, key, bars, bpm: P.bpm, bpb: P.bpb, seed: (Math.random() * 1e9) | 0 });
+    const lbpm = Math.round(T.bpmAt(P.cursor) * 100) / 100;
+    const buf = await LoopLab.generate({ style, part, key, bars, bpm: lbpm, bpb: P.bpb, seed: (Math.random() * 1e9) | 0 });
     const ks = key.replace(' minor', 'm').replace(' major', '');
-    const A = addAsset(`${style} ${part.toLowerCase()} · ${ks}`, buf, { bpm: P.bpm, beats: bars * P.bpb, isLoop: true, generated: true, key: null });
-    toast('Generated ' + A.name + ' at ' + P.bpm + ' BPM. Drag it onto the timeline.', 'ok');
+    const A = addAsset(`${style} ${part.toLowerCase()} · ${ks}`, buf, { bpm: lbpm, beats: bars * P.bpb, isLoop: true, generated: true, key: null });
+    toast('Generated ' + A.name + ' at ' + lbpm + ' BPM. Drag it onto the timeline.', 'ok');
   } catch (e) { toast('Could not generate the loop: ' + e.message, 'err'); }
   btn.disabled = false;
 }
@@ -243,10 +297,14 @@ function onKey(e) {
   if (k === ' ') { e.preventDefault(); Engine.toggle(); return; }
   if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); Hist.doUndo(); return; }
   if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); Hist.doRedo(); return; }
-  if (k === 'home') { P.cursor = 0; if (Engine.playing) Engine.play(0); bus.emit('transport'); return; }
+  if (k === 'home') { Arrange.setCursor(0); $('#tlScroll').scrollLeft = 0; return; }
   if (!mod && k === 'r') { if (Engine.recording) Engine.pause(); else Engine.startRecord(); return; }
   if (!mod && k === 'l') { toggleLoop(); return; }
-  if (!mod && !e.shiftKey && k === 'm') { P.metro = !P.metro; bus.emit('transport'); return; }
+  if (!mod && k === 'c' && S.view === 'arrange') { P.metro = !P.metro; bus.emit('transport'); status(P.metro ? 'Metronome on' : 'Metronome off'); return; }
+  if (!mod && (e.key === '[' || e.key === ']' || e.key === '{' || e.key === '}')) { e.preventDefault(); nudgeTempo((e.key === ']' || e.key === '}' ? 1 : -1) * (e.shiftKey ? 1 : 0.1)); return; }
+  if (mod && k === 'g') { e.preventDefault(); goTo(); return; }
+  if (e.key === '?' || e.key === 'F1') { e.preventDefault(); showShortcuts(); return; }
+  if (k === 'end' && S.view !== 'arrange') return;
   if (k === 'escape') { S.selClip = null; Arrange.draw(); return; }
   if (S.view === 'arrange' && Arrange.key(e)) { e.preventDefault(); }
 }
@@ -255,7 +313,8 @@ function onKey(e) {
 function frame() {
   if (Engine.playing) {
     updatePos();
-    if (S.view === 'arrange') { Arrange.follow(); Arrange.drawOverlay(); }
+    const pb = Engine.posBeats(); if (!frame._t || performance.now() - frame._t > 120) { frame._t = performance.now(); showTempo(pb); if (S.view === 'arrange') Arrange.drawOverview(); }
+    if (S.view === 'arrange') { Arrange.follow(); Arrange.drawOverlay(); Arrange.tickMeters(); }
   }
   if (Engine.ctx && Engine.master) {
     const cv = $('#masterMini');
@@ -287,10 +346,15 @@ async function buildDemo() {
     if (i === 3) { t.rev = 0.25; t.dly = 0.12; t.vol = -4; }
     if (i === 1) { t.pan = -0.15; t.vol = -3; }
     const [s, e] = plan[i];
-    t.clips.push({ id: uid('c'), asset: A.id, start: s, len: e - s, offset: 0, sync: true, loop: true, gain: 0, fadeIn: 0, fadeOut: 0 });
+    t.clips.push({ id: uid('c'), asset: A.id, start: s, len: e - s, offset: 0, offB: 0, sync: true, loop: true, gain: 0, fadeIn: 0, fadeOut: 0, fadeCurve: 'eq', fx: [] });
     P.tracks.push(t);
   });
   P.loop = { on: false, start: 16, end: 32 };
+  // a gentle tempo lift in the second half shows off the tempo lane
+  P.tempo = [{ id: uid('tm'), b: 0, bpm: 105, ramp: false }, { id: uid('tm'), b: 32, bpm: 105, ramp: false }, { id: uid('tm'), b: 48, bpm: 108, ramp: true }];
+  P.markers = [{ id: uid('m'), b: 0, name: 'Intro' }, { id: uid('m'), b: 16, name: 'Groove' }, { id: uid('m'), b: 48, name: 'Lift' }];
+  P.tracks[3].clips[0].fx = [Plugins.instance('filter', { type: 'lowpass', freq: 1800, q: 1.2, rate: 0.12, depth: 60 })];
+  migrateProject();
   Hist.undo = []; Hist.redo = [];
   bus.emit('project');
 }

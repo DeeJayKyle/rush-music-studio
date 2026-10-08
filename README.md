@@ -1,4 +1,4 @@
-# Rush Music Studio 1.1
+# Rush Music Studio 1.2
 
 An offline, open-source music studio. It combines a loop-based multitrack arranger, a sample-accurate audio editor, a real-time four-stem separator and a mixer in one app. No licence key, no account and no internet connection are needed. Written from scratch and released under the MIT licence.
 
@@ -21,6 +21,23 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 
 ## What's inside
 
+**Made for mixtapes (new in 1.2)**
+- **Add to mix.** The + button on any song in Media puts it on its own track, overlapping the end of the mix, with an automatic crossfade: the "staircase" layout.
+- **Tempo markers.** The red lane above the ruler holds tempo changes. Double-click it (or press T) to add one; choose an instant change or a gradual ramp from the previous marker. Drag flags to move them. Right-click for Edit, Go to, Delete, and Adjust tempo to match the cursor.
+- **Songs follow the tempo map.** Every song is time-stretched to the tempo at each moment, holds and ramps included, with its pitch kept. Beats land within about 5 ms of the grid.
+- **Beat grids.** Rush finds each song's tempo, key (with Camelot code) and first downbeat, and lines the downbeat up with the bar you drop it on.
+- **Clip properties.** Double-click a clip, or press Alt+Enter. You get:
+  - the song tempo and downbeat over a beat-grid waveform (click to set the downbeat, preview with a metronome)
+  - preserve pitch on or off (varispeed)
+  - pitch shift, gain and fades
+- **Effects on every clip.** Click the fx badge on a clip, or press E. Track effects are on the FX button (Shift+E), master effects in the Mixer.
+- **Crossfades.** X crossfades the selected clip with everything it overlaps; Shift+X does the whole project. Fades are equal-power by default.
+- **Navigation.** There's an overview strip, Follow-playhead, and previous/next marker buttons.
+  - Keyboard: Tab between clips, arrows for the cursor and zoom, F to fit, Z to zoom to a clip, Ctrl+G to go to a bar or time, `[` `]` to nudge the tempo, `?` for the full shortcut sheet.
+  - Mouse: middle-drag to pan, Alt+wheel for track height.
+  - Touchpad: pinch to zoom.
+- **Live level meters** in every track header, and finer grid choices (2 or 4 bars down to 1/32 and triplets).
+
 **Plugins (Ctrl+K)**
 - 20 original real-time effects, each with factory presets and your own saved presets.
   - EQ & Filter: Parametric EQ, 10-band Graphic EQ, Auto filter, Wah-wah.
@@ -36,11 +53,11 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 **Arrange (key 1)**
 - Unlimited tracks with drag-and-drop clips.
 - Volume and pan envelopes: track menu → Show volume envelope. Click the line to add a point, drag to move it, right-click to delete it.
-- Timeline markers: Shift+M inserts one. Use , and . to jump between markers.
+- Timeline markers: M (or Shift+M) inserts one. Use , and . (or Ctrl+←/→) to jump between markers and tempo changes.
 - Per-track transpose of ±12 semitones, keeping tempo.
 - Loops follow the project tempo automatically. Pitch is kept, using WSOLA time-stretch.
 - Trim, loop-extend, split (S), duplicate (Ctrl+D), Alt-drag to copy, and clip fades with gain.
-- Snap grid, loop region, metronome, tap tempo and recording from your microphone.
+- Grid snapping, loop region, metronome (C), tap tempo and recording from your microphone.
 - Undo/redo for every change.
 
 **Editor (key 2)**
@@ -95,6 +112,7 @@ The masks always sum to one, so the four stems add back up to the original exact
 | File | Purpose |
 |---|---|
 | `src/fft.js` | FFT |
+| `src/tempo.js` | Tempo map (markers, ramps, beat ↔ time) |
 | `src/plugins.js` | Plugin rack |
 | `src/chainer.js` | Plug-in Chainer UI |
 | `src/worker.js` | DSP thread: stems, tempo/key, stretch, denoise, spectrogram |
@@ -121,6 +139,8 @@ The masks always sum to one, so the four stems add back up to the original exact
 | Ctrl+E | Export mix |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+K | Effects (Plug-in Chainer) |
-| Shift+M | Insert marker (Arrange) |
+| T / M | Tempo change / marker at the cursor |
+| E / X | Clip effects / crossfade |
+| ? | All shortcuts |
 | M / R | Marker / region (Editor) |
 | + / − | Zoom |
