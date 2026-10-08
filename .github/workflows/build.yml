@@ -34,10 +34,21 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Build installers
         working-directory: desktop
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist
+        run: |
+          set -o pipefail
+          npm run dist 2>&1 | tee build.log
+      - name: Report build error
+        if: failure()
+        shell: bash
+        working-directory: desktop
+        run: |
+          tail -c 2500 build.log | tr '\n' '|' | sed 's/%/%25/g' > tail.txt || true
+          echo "::error title=electron-builder::$(cat tail.txt)"
+          ls -la release || true
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
