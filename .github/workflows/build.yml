@@ -56,17 +56,25 @@ jobs:
           path: dist/RushMusicStudio.html
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publishes (or updates) the release named after the version in desktop/package.json
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: ver
+        run: echo "v=v$(jq -r .version desktop/package.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          name: Rush Music Studio ${{ github.ref_name }}
+          tag_name: ${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          name: Rush Music Studio ${{ steps.ver.outputs.v }}
           body: |
             Download for your computer:
             - **Windows:** `RushMusicStudio-*-win-x64.exe` (installer) or `RushMusicStudio-*-portable.exe` (no install)

@@ -10,7 +10,7 @@ Go to **Releases** (right side of this page) and download:
 - **Linux:** the `.AppImage` or the `.deb`.
 - **Any computer:** `RushMusicStudio.html`. Open it in Chrome or Edge and it works fully offline.
 
-Every push to `main` builds all versions automatically (see the **Actions** tab). Pushing a tag such as `v1.2.0` publishes a new release.
+Every push to `main` builds all versions automatically (see the **Actions** tab) and publishes them as the release named after the `version` in `desktop/package.json`. Bump that number to start a new release.
 
 ## Run it
 
