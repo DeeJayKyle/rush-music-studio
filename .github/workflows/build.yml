@@ -31,7 +31,13 @@ jobs:
           node-version: '20'
       - name: Install build tools
         working-directory: desktop
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install --no-audit --no-fund 2>&1 | tee install.log && break
+            echo "Install attempt $i failed, retrying in 20 s"; rm -rf node_modules; sleep 20
+            [ $i = 3 ] && { echo "::error title=npm install::$(tail -c 2000 install.log | tr '\n' '|')"; exit 1; }
+          done
       - name: Build installers
         working-directory: desktop
         shell: bash
