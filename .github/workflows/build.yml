@@ -26,9 +26,19 @@ jobs:
       - name: Copy app into the desktop shell
         shell: bash
         run: mkdir -p desktop/app && cp dist/RushMusicStudio.html desktop/app/
+      - name: Fetch the AI stem separator (HTDemucs + ONNX Runtime)
+        shell: bash
+        run: bash desktop/fetch-ai.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Check AI stem quality
+        if: matrix.os == 'ubuntu-latest' && hashFiles('desktop/ai/models/manifest.json') != ''
+        continue-on-error: true
+        shell: bash
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ortn" onnxruntime-node > /dev/null 2>&1
+          node desktop/ci-ai-test.js "$RUNNER_TEMP/ortn/node_modules/onnxruntime-node"
       - name: Install build tools
         working-directory: desktop
         shell: bash
@@ -97,5 +107,5 @@ jobs:
             - **Windows:** `RushMusicStudio-*-win-x64.exe` (installer) or `RushMusicStudio-*-portable.exe` (no install)
             - **Mac:** `.dmg` (unsigned: right-click the app → Open the first time)
             - **Linux:** `.AppImage` or `.deb`
-            - **Any computer:** `RushMusicStudio.html` — open it in Chrome or Edge, fully offline.
+            - **Any computer:** `RushMusicStudio.html` — open it in Chrome or Edge, fully offline (fast stem separator only; the AI separator ships with the desktop app).
           files: out/*

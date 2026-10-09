@@ -28,6 +28,7 @@ const Deck = (() => {
     g.stem.vocals.connect(g.echoSend).connect(g.echo); g.echo.connect(ef).connect(g.echoFb).connect(g.echo); ef.connect(g.bus);
     // instant (live) split network on the full mix
     g.liveIn = ctx.createGain();
+    g.liveGate = ctx.createGain(); g.liveGate.connect(g.liveIn);   // closes where AI stems take over
     g.direct = ctx.createGain(); g.liveIn.connect(g.direct).connect(g.bus);
     const split = ctx.createChannelSplitter(2);
     g.liveIn.connect(split);
@@ -83,14 +84,63 @@ const Deck = (() => {
       D.mode = 'hq';
     } else {
       const s = ctx.createBufferSource(); s.buffer = D.A.buffer; s.playbackRate.value = D.rate;
-      s.connect(g.liveIn); s.start(when, at); D.srcs.push(s);
+      s.connect(g.liveGate); s.start(when, at); D.srcs.push(s);
       D.mode = 'live';
+      D.sched = { when, at, recs: [] };
+      g.liveGate.gain.cancelScheduledValues(0); g.liveGate.gain.setValueAtTime(1, ctx.currentTime);
+      if (D.A.stems.live) for (const r of D.A.stems.live.regions) scheduleRegion(r, true);
+      gate();
+      if (D.A.stems.ai) D.A.stems.ai.focus(at);
     }
     D.srcs[0].onended = () => { if (D.playing && pos() >= dur() - 0.05) { D.playing = false; D.off = 0; ui(); } };
     D.t0 = when; D.off = at; D.playing = true;
     apply(); ui();
   }
-  function stopSrcs() { for (const s of D.srcs) { try { s.onended = null; s.stop(); } catch (e) { } } D.srcs = []; }
+  function stopSrcs() {
+    for (const s of D.srcs) { try { s.onended = null; s.stop(); } catch (e) { } } D.srcs = [];
+    if (D.sched) for (const rec of D.sched.recs) for (const s of rec.srcs) { try { s.stop(); } catch (e) { } }
+    D.sched = null;
+  }
+  // ---- progressive AI stems: play each finished stretch as soon as it arrives, live split elsewhere ----
+  const XF = 0.012;
+  const ctxTime = (t) => D.sched.when + (t - D.sched.at) / D.rate;
+  function scheduleRegion(r, batch) {
+    if (!D.playing || !D.sched || D.mode !== 'live') return;
+    const ctx = Engine.ctx, g = D.g, now = ctx.currentTime + 0.05;
+    const songNow = D.sched.at + Math.max(0, now - D.sched.when) * D.rate;
+    const a = Math.max(r.a, songNow);
+    if (a >= r.b - 0.02) return;
+    if (!r.bufs) { r.bufs = {}; for (const k of order) r.bufs[k] = makeBuffer(r.parts[k], r.sr); }
+    const t0 = ctxTime(a), t1 = ctxTime(r.b), rec = { a, b: r.b, t0, t1, srcs: [], gains: [] };
+    for (const k of order) {
+      const src = ctx.createBufferSource(); src.buffer = r.bufs[k]; src.playbackRate.value = D.rate;
+      const gn = ctx.createGain(); src.connect(gn).connect(g.stem[k]);
+      src.start(t0, a - r.a); src.stop(t1);
+      rec.srcs.push(src); rec.gains.push(gn);
+    }
+    D.sched.recs.push(rec);
+    if (!batch) gate();
+  }
+  // fades at the edges of AI coverage, and the live split muted wherever AI stems play
+  function gate() {
+    if (!D.sched) return;
+    const ctx = Engine.ctx, now = ctx.currentTime, recs = D.sched.recs.sort((x, y) => x.a - y.a), lg = D.g.liveGate.gain;
+    const covered = (t) => recs.some((q) => t >= q.a - 1e-3 && t < q.b - 1e-3);
+    lg.cancelScheduledValues(now); lg.setValueAtTime(lg.value, now);
+    for (const rec of recs) {
+      if (rec.t1 < now) continue;
+      const contigIn = recs.some((q) => q !== rec && Math.abs(q.b - rec.a) < 2e-3), contigOut = recs.some((q) => q !== rec && Math.abs(q.a - rec.b) < 2e-3);
+      for (const gn of rec.gains) {
+        gn.gain.cancelScheduledValues(now);
+        if (rec.t0 > now && !contigIn) { gn.gain.setValueAtTime(0, rec.t0); gn.gain.linearRampToValueAtTime(1, rec.t0 + XF); }
+        else gn.gain.setValueAtTime(1, Math.max(now, rec.t0));
+        if (!contigOut) { gn.gain.setValueAtTime(1, Math.max(now, rec.t1 - XF)); gn.gain.linearRampToValueAtTime(0, rec.t1); }
+      }
+      if (!contigIn) { if (rec.t0 > now) { lg.setValueAtTime(1, rec.t0); lg.linearRampToValueAtTime(0, rec.t0 + XF); } else lg.setValueAtTime(0, now); }
+      if (!contigOut) { lg.setValueAtTime(0, Math.max(now, rec.t1 - XF)); lg.linearRampToValueAtTime(1, rec.t1); }
+    }
+    if (!recs.length || !covered(D.sched.at + (now - D.sched.when) * D.rate)) { /* live split keeps playing */ }
+  }
   function play() {
     if (!D.A) { toast('Load a song to the deck first.'); return; }
     if (D.playing) { pause(); return; }
@@ -105,7 +155,7 @@ const Deck = (() => {
     else { if (Math.abs(D.off - D.cue) < 0.01) { start(D.cue); loop(); return; } D.cue = D.off; toast('Cue point set at ' + fmtShort(D.cue)); }
     draw();
   }
-  function seek(t) { t = clamp(t, 0, dur()); if (D.playing) start(t); else { D.off = t; draw(); } }
+  function seek(t) { t = clamp(t, 0, dur()); if (D.playing) start(t); else { D.off = t; draw(); if (D.A && D.A.stems.ai) D.A.stems.ai.focus(t); } }
   function loop() {
     if (!D.playing) { draw(); return; }
     draw();
@@ -120,26 +170,32 @@ const Deck = (() => {
     $('#dkAsset').value = id;
     ui(); draw();
     if (A.stems.state !== 'done') separate();
+    else ui();
   }
   function unload() { pause(); D.A = null; ui(); draw(); }
   async function separate() {
     const A = D.A; if (!A) return;
     const t0 = performance.now();
-    setStatus('live', 'Separating on ' + Pool.size + ' threads… instant mode is live meanwhile.', A.stems.progress || 0);
+    const label = () => (A.stems.engine === 'ai' ? AI.describe() : 'Fast separator on ' + Pool.size + ' threads');
+    setStatus('live', 'Preparing stems… instant mode is live meanwhile.', A.stems.progress || 0);
     try {
-      await separateAsset(A, (p) => { if (D.A === A) setStatus('live', 'Separating on ' + Pool.size + ' threads… ' + Math.round(p * 100) + ' %', p); });
+      await separateAsset(A, (p) => { if (D.A === A) setStatus('live', label() + ' · ' + Math.round(p * 100) + ' %' + (A.stems.engine === 'ai' ? ' · finished parts already play as AI stems' : ''), p); }, { from: D.off });
       if (D.A !== A) return;
-      const ms = A.stems.ms || (performance.now() - t0);
-      const x = A.buffer.duration / (ms / 1000);
-      setStatus('hq', 'HQ stems ready · ' + fmtShort(A.buffer.duration) + ' of audio in ' + (ms / 1000).toFixed(1) + ' s (' + x.toFixed(0) + '× real-time)', 1);
-      if (D.playing) start(pos());
+      ui();
+      // already playing AI stems to the end? keep going without a restart
+      if (D.playing) {
+        const p = pos(), recs = D.sched ? D.sched.recs.slice().sort((x, y) => x.a - y.a) : [];
+        let t = p; for (const r of recs) if (r.a <= t + 2e-3 && r.b > t) t = r.b;
+        if (t < dur() - 0.05) start(p); else { D.mode = 'hq'; apply(); }
+      }
       draw();
     } catch (e) { setStatus('idle', 'Separation stopped: ' + e.message, 0); }
   }
   function setStatus(mode, txt, p) {
     const b = $('#dkMode');
     b.className = 'badge ' + (mode === 'hq' ? 'hq' : mode === 'live' ? 'live' : '');
-    b.textContent = mode === 'hq' ? 'HQ stems' : mode === 'live' ? 'Instant mode' : 'Idle';
+    const ai = D.A && D.A.stems.engine === 'ai';
+    b.textContent = mode === 'hq' ? (ai ? 'AI stems' : 'HQ stems') : mode === 'live' ? (D.sched && D.sched.recs.length ? 'Instant + AI' : 'Instant mode') : 'Idle';
     $('#dkStatusTxt').textContent = txt;
     $('#dkProg').style.width = Math.round((p || 0) * 100) + '%';
   }
@@ -187,8 +243,8 @@ const Deck = (() => {
     $('#dkBpm').textContent = A && A.bpm ? (A.bpm * D.rate).toFixed(1) : '—';
     $('#dkKey').textContent = A && A.key ? A.key.camelot + ' ' + A.key.short : '—';
     const pb = $('#dkPlay'); pb.innerHTML = ''; pb.append(icon(D.playing ? 'pause' : 'play'));
-    if (!A) setStatus('idle', 'Separation runs on every CPU core, fully offline.', 0);
-    else if (A.stems.state === 'done') setStatus('hq', 'HQ stems ready' + (A.stems.ms ? ' · separated in ' + (A.stems.ms / 1000).toFixed(1) + ' s (' + (A.buffer.duration / (A.stems.ms / 1000)).toFixed(0) + '× real-time)' : ''), 1);
+    if (!A) setStatus('idle', AI.status === 'unknown' ? 'Separation runs fully offline on this computer.' : AI.describe(), 0);
+    else if (A.stems.state === 'done') setStatus('hq', (A.stems.engine === 'ai' ? 'AI stems ready (HTDemucs)' : 'Fast stems ready') + (A.stems.ms ? ' · separated in ' + (A.stems.ms / 1000).toFixed(1) + ' s (' + (A.buffer.duration / (A.stems.ms / 1000)).toFixed(1) + '× real-time)' : '') + (A.stems.engine !== 'ai' && AI.status === 'ready' ? ' · for AI quality, right-click the file in Media › Separate again with AI' : ''), 1);
   }
   function fillSelect() {
     const s = $('#dkAsset'); const cur = s.value; s.innerHTML = '';
@@ -253,6 +309,7 @@ const Deck = (() => {
       ctx.fillStyle = alpha(C.bg, 0.45); ctx.fillRect(0, 0, x, h);
       ctx.fillStyle = C.accent; ctx.fillRect(x - 1, 0, 2, h);
       ctx.fillStyle = C.sel; ctx.fillRect(D.cue / dur() * w, 0, 1.5, h);
+      if (D.A.stems.live) { ctx.fillStyle = alpha(C.ok, 0.9); for (const r of D.A.stems.live.regions) ctx.fillRect(r.a / dur() * w, h - 3, Math.max(1, (r.b - r.a) / dur() * w), 3); }
     }
     $('#dkTime').textContent = fmtShort(p);
     $('#dkRemain').textContent = '-' + fmtShort(Math.max(0, dur() - p));
@@ -321,6 +378,8 @@ const Deck = (() => {
     bus.on('assets', () => { fillSelect(); if (D.A && !S.assets.has(D.A.id)) unload(); });
     bus.on('assetChanged', (A) => { if (A === D.A) { pause(); ui(); draw(); if (S.view === 'stems') separate(); } });
     bus.on('assetMeta', (A) => { if (A === D.A) ui(); });
+    bus.on('stemRegion', ({ A, r }) => { if (A === D.A) { scheduleRegion(r); setStatus('live', $('#dkStatusTxt').textContent, A.stems.progress); if (!D.playing) draw(); } });
+    bus.on('ai', () => { if (D.A) ui(); else setStatus('idle', AI.describe(), 0); });
     fillSelect(); ui();
   }
   function unloadAudio() { pause(); D.g = null; }

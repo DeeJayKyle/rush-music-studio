@@ -1,8 +1,8 @@
 {
   "name": "rush-music-studio",
   "productName": "Rush Music Studio",
-  "version": "1.3.0",
-  "description": "Offline, open-source music studio: multitrack arranger, audio editor, plugin rack, real-time stem separation and mixer.",
+  "version": "1.4.0",
+  "description": "Offline, open-source music studio: multitrack arranger, audio editor, plugin rack, AI stem separation (HTDemucs), mastering and mixer.",
   "main": "main.js",
   "license": "MIT",
   "author": {
@@ -83,7 +83,16 @@
       ],
       "category": "Audio",
       "maintainer": "Rush Music Studio contributors"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "ai",
+        "to": "ai",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "repository": {
     "type": "git",

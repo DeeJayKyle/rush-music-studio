@@ -80,7 +80,7 @@ function assetChanged(A, newBuffer) {
   if (newBuffer) A.buffer = newBuffer;
   A.peaks = computePeaks(A.buffer);
   A.stretch.clear();
-  if (A.stems.state !== 'none') A.stems = { state: 'none', buffers: null, peaks: null, promise: null, ms: 0 };
+  if (A.stems.state !== 'none') { if (A.stems.ai) A.stems.ai.cancel(); A.stems = { state: 'none', buffers: null, peaks: null, promise: null, ms: 0 }; }
   A.version++;
   bus.emit('assets'); bus.emit('assetChanged', A);
   Engine.refresh();
@@ -241,12 +241,52 @@ function migrateProject() {
 }
 
 // ---- stem separation -------------------------------------------------------------
-async function separateAsset(A, onProgress) {
-  if (A.stems.state === 'done') return A.stems;
-  if (A.stems.promise) { A.stems.onProgress = onProgress; return A.stems.promise; }
+// AI (HTDemucs) when the desktop app ships the model, otherwise the fast DSP separator.
+// opts.from (seconds) separates from that point first, so the deck can use AI stems right away.
+function separateAsset(A, onProgress, opts = {}) {
+  if (A.stems.state === 'done') return Promise.resolve(A.stems);
+  if (A.stems.state === 'running') {
+    if (onProgress) A.stems.onProgress = onProgress;
+    if (opts.from != null && A.stems.ai) A.stems.ai.focus(opts.from);
+    return A.stems.starting;
+  }
   const t0 = performance.now();
   A.stems.state = 'running'; A.stems.onProgress = onProgress; A.stems.progress = 0;
   bus.emit('assets');
+  const useAI = !opts.dsp && !(typeof PREF !== 'undefined' && PREF.stemEngine === 'dsp');
+  A.stems.starting = (async () => (useAI && (await AI.ready()) ? separateAssetAI(A, t0, opts) : separateAssetDSP(A, t0)))();
+  return A.stems.starting;
+}
+function separateAssetAI(A, t0, opts) {
+  const ver = A.version;
+  A.stems.engine = 'ai'; A.stems.live = { regions: [] };
+  const h = AI.separate(A, {
+    from: opts.from || 0,
+    onRegion: (a, b, parts, sr) => { const r = { a, b, parts, sr }; A.stems.live.regions.push(r); bus.emit('stemRegion', { A, r }); },
+    onProgress: (p) => { A.stems.progress = p; A.stems.onProgress && A.stems.onProgress(p); },
+  });
+  A.stems.ai = h;
+  A.stems.promise = h.promise.then(({ stems, ms }) => {
+    if (A.version !== ver) throw new Error('File changed during separation');
+    const bufs = {}; for (const k of ['vocals', 'melody', 'bass', 'drums']) bufs[k] = makeBuffer(stems[k], A.buffer.sampleRate);
+    A.stems.buffers = bufs;
+    A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
+    A.stems.state = 'done'; A.stems.ms = performance.now() - t0; A.stems.aiMs = ms; A.stems.promise = null; A.stems.ai = null;
+    bus.emit('assets'); bus.emit('stemsDone', A);
+    A.stems.live = null;
+    return A.stems;
+  }).catch((e) => {
+    A.stems.ai = null; A.stems.live = null;
+    if (A.version !== ver || /cancel/.test(e.message)) { A.stems.state = 'none'; A.stems.promise = null; bus.emit('assets'); throw e; }
+    console.warn('AI separation failed, using the fast separator:', e);
+    toast('AI separation stopped (' + e.message + '). Using the fast separator instead.', 'err');
+    A.stems.engine = 'dsp';
+    return separateAssetDSP(A, t0);
+  });
+  return A.stems.promise;
+}
+function separateAssetDSP(A, t0) {
+  A.stems.engine = 'dsp';
   const ver = A.version, buf = A.buffer, sr = buf.sampleRate, len = buf.length;
   const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
   const H = 1024, chunk = Math.ceil(sr * 10 / H) * H, pad = 16 * H;
@@ -812,7 +852,8 @@ const Project = {
     for (const A of S.assets.values()) {
       const m = { id: A.id, name: A.name, sr: A.buffer.sampleRate, len: A.buffer.length, nch: A.buffer.numberOfChannels, bpm: A.bpm, beats: A.beats, isLoop: A.isLoop, key: A.key, generated: A.generated, downbeat: A.downbeat || 0, markers: A.markers || [], beatmapped: !!A.beatmapped, revOf: A.revOf || null, data: [] };
       for (const ch of bufferChannels(A.buffer)) m.data.push(pushF32(ch));
-      if (usedStems.has(A.id) && A.stems.state === 'done') {
+      if ((usedStems.has(A.id) || A.stems.engine === 'ai') && A.stems.state === 'done') {
+        m.stemEngine = A.stems.engine || 'dsp';
         m.stems = {};
         for (const k in A.stems.buffers) m.stems[k] = bufferChannels(A.stems.buffers[k]).map((ch) => pushF32(ch));
       }
@@ -839,7 +880,7 @@ const Project = {
       if (!m.bpm) analyzeAsset(A);
       if (m.stems) {
         const bufs = {}; for (const k in m.stems) bufs[k] = makeBuffer(m.stems[k].map((o) => new Float32Array(ab, base + o, m.len).slice()), m.sr);
-        A.stems.buffers = bufs; A.stems.state = 'done'; A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
+        A.stems.buffers = bufs; A.stems.state = 'done'; A.stems.engine = m.stemEngine || 'dsp'; A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
       }
     }
     P = Object.assign(newProject(), meta.project);

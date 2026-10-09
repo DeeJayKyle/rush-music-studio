@@ -1,4 +1,4 @@
-# Rush Music Studio 1.3
+# Rush Music Studio 1.4
 
 An offline, open-source music studio. It combines a loop-based multitrack arranger, a sample-accurate audio editor, a real-time four-stem separator and a mixer in one app. No licence key, no account and no internet connection are needed. Written from scratch and released under the MIT licence.
 
@@ -21,7 +21,15 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 
 ## What's inside
 
-**New in 1.3: sound quality and studio workflow**
+**New in 1.4: AI stem separation**
+- **HTDemucs, built in.** The desktop app ships Meta AI's Hybrid Transformer Demucs v4 (MIT). It is the same class of neural separator used by professional stem tools, and it runs fully offline on your own computer through ONNX Runtime: on the graphics card (WebGPU) when it can, otherwise on every CPU core.
+- **Instant, then AI.** Load a song to the Stems deck and it plays immediately with the fast real-time split. The AI starts at the playhead and works forwards, so each finished stretch of the song switches to AI stems on its own, with seamless crossfades. Seeking moves the AI to where you are. The overview shows a green bar for parts that are already done.
+- **Saved with the project.** AI stems are stored in the `.rush` file, so a song is only separated once.
+- **Settings.** Preferences › Stem separation chooses AI or the fast separator, the quality (window overlap 10%, 25% or 50%) and whether to use the graphics card.
+- **Already separated with the fast separator?** Right-click the file in Media › Separate again with AI.
+- The single-file `RushMusicStudio.html` keeps the fast separator; the model (about 170 MB) comes with the installers.
+
+**1.3: sound quality and studio workflow**
 - **Mastering export (Ctrl+E).** Export to WAV (16-bit, 24-bit or 32-bit float) or MP3 (128–320 kbps), at 44.1 to 96 kHz, for the whole project, the loop region or from the cursor.
   - Loudness presets: Streaming −14 LUFS, Apple Music −16, Mixtape −10, Club −8, Broadcast EBU R128 −23, true-peak only, or custom.
   - Loudness is measured to ITU-R BS.1770-4 / EBU R128 (matches FFmpeg's `ebur128` to 0.1 LU).
@@ -130,12 +138,16 @@ Every push to `main` builds all versions automatically (see the **Actions** tab)
 
 ## How the stem separator works
 
-Rush uses classic signal processing rather than a neural network:
+There are two separators.
+
+**AI (desktop app): HTDemucs v4.** A neural network that works on the waveform and the spectrogram at the same time, with a transformer between the two branches. Rush runs it in 7.8-second windows that overlap and are cross-faded with triangular weights, exactly like the reference implementation. Speed depends on the computer: a graphics card is fastest, and on the CPU it uses every core. Typical quality on the MUSDB18-HQ benchmark is about 9 dB SDR for drums and vocals, far beyond any filter-based method.
+
+**Fast (everywhere, and the instant layer):**
 - Harmonic/percussive separation by median filtering of the spectrogram.
 - Stereo-centre analysis, with vocals usually panned centre.
 - Frequency-band masking. Bass is kept below about 250 Hz.
 
-The masks always sum to one, so the four stems add back up to the original exactly. Results are very good for drums and bass, and good for vocals on stereo mixes. A neural-network separator (Demucs-class) gives cleaner vocals, but it needs a large model file and much more CPU. The `separate()` function in `src/worker.js` is the place to plug one in.
+The fast separator's masks always sum to one, so its four stems add back up to the original exactly. It runs 10–40× faster than real time and plays instantly while the AI works.
 
 ## Build from source
 
@@ -153,6 +165,8 @@ The masks always sum to one, so the four stems add back up to the original exact
 | `src/shell.js` | Preferences, Save/Save As/Recent, project properties, export dialog, View/Options menus |
 | `src/explorer.js` | Explorer file browser |
 | `src/beatmap.js` | Beatmapper wizard |
+| `src/ai.js`, `src/aiworker.js` | AI stem separation (HTDemucs via ONNX Runtime), streaming results to the deck |
+| `desktop/fetch-ai.sh` | Downloads the model and runtime for the desktop build |
 | `src/engine.js` | Audio engine, project model, save/load |
 | `src/arrange.js` | Arranger view |
 | `src/editor.js` | Editor view |
@@ -163,7 +177,7 @@ The masks always sum to one, so the four stems add back up to the original exact
 
 ## Third-party code
 
-MP3 export uses [lamejs](https://github.com/zhuker/lamejs), a JavaScript port of the [LAME](https://lame.sourceforge.net) encoder, under the LGPL. It is included unmodified as a separate file (`src/vendor/lame.min.js`, licence in `src/vendor/LAMEJS-LICENSE.txt`) and loaded into its own script block, so you can swap it for another build. Everything else is original code under the MIT licence.
+See [THIRD_PARTY.md](THIRD_PARTY.md). The AI model (HTDemucs, MIT, Meta AI) and ONNX Runtime Web (MIT, Microsoft) are downloaded by `desktop/fetch-ai.sh` when the installers are built. MP3 export uses [lamejs](https://github.com/zhuker/lamejs), a JavaScript port of the [LAME](https://lame.sourceforge.net) encoder, under the LGPL. It is included unmodified as a separate file (`src/vendor/lame.min.js`, licence in `src/vendor/LAMEJS-LICENSE.txt`) and loaded into its own script block, so you can swap it for another build. Everything else is original code under the MIT licence.
 
 ## Keyboard
 

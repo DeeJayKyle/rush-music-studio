@@ -7,6 +7,7 @@ const PREF = (() => {
     latency: 'interactive', sampleRate: 0, autosave: true,
     autoBeatmap: true, beatmapMin: 90, autoXfade: true, quickFade: true, ripple: false, snapOn: true, countIn: 1,
     previewAuto: true, previewVol: -6, previewSync: false,
+    stemEngine: 'auto', aiOverlap: 0.25, aiDevice: 'auto',
     np: { bpm: 105, bpb: 4, artist: '', engineer: '', copyright: '', genre: '', remember: false },
     exp: { format: 'wav24', sr: 0, master: 'streaming', target: -14, ceiling: -1, dither: true, tail: true, dest: 'file' },
     showOverview: true, showMeters: true, showLibrary: true,
@@ -275,6 +276,10 @@ async function showPrefs() {
     { id: 'quickFade', label: 'Quick fade clip edges (5 ms, removes clicks at cuts)', type: 'check', value: PREF.quickFade },
     { id: 'previewAuto', label: 'Auto-preview files in the Explorer', type: 'check', value: PREF.previewAuto },
     { id: 'previewSync', label: 'Preview in project tempo (when the file’s tempo is known)', type: 'check', value: PREF.previewSync },
+    { type: 'header', label: 'Stem separation' },
+    { id: 'stemEngine', label: 'Separator', type: 'select', value: PREF.stemEngine, options: [{ value: 'auto', label: 'AI (HTDemucs) when available' }, { value: 'dsp', label: 'Fast (signal processing only)' }], hint: AI.describe() },
+    { id: 'aiOverlap', label: 'AI quality', type: 'select', value: String(PREF.aiOverlap), options: [{ value: '0.25', label: 'Best (25% window overlap)' }, { value: '0.5', label: 'Maximum (50% overlap, 1.5× slower)' }, { value: '0.1', label: 'Faster (10% overlap)' }] },
+    { id: 'aiDevice', label: 'AI runs on', type: 'select', value: PREF.aiDevice, options: [{ value: 'auto', label: 'Graphics card when available, else CPU' }, { value: 'cpu', label: 'CPU only' }], hint: 'Takes effect the next time Rush starts.' },
     { type: 'header', label: 'Songs and beatmapping' },
     { id: 'autoBeatmap', label: 'Open the Beatmapper for long songs added to the arrangement', type: 'check', value: PREF.autoBeatmap },
     { id: 'beatmapMin', label: 'A song is “long” from (seconds)', type: 'number', value: PREF.beatmapMin, min: 10, max: 900, step: 5, show: (v) => v.autoBeatmap },
@@ -282,7 +287,7 @@ async function showPrefs() {
   ] });
   if (!r) return;
   const audioChanged = r.latency !== PREF.latency || +r.sampleRate !== PREF.sampleRate;
-  Object.assign(PREF, { latency: r.latency, sampleRate: +r.sampleRate, countIn: +r.countIn, previewVol: r.previewVol, snapOn: r.snapOn, autoXfade: r.autoXfade, ripple: r.ripple, quickFade: r.quickFade, previewAuto: r.previewAuto, previewSync: r.previewSync, autoBeatmap: r.autoBeatmap, beatmapMin: clamp(+r.beatmapMin || 90, 10, 900), autosave: r.autosave });
+  Object.assign(PREF, { latency: r.latency, sampleRate: +r.sampleRate, countIn: +r.countIn, previewVol: r.previewVol, snapOn: r.snapOn, autoXfade: r.autoXfade, ripple: r.ripple, quickFade: r.quickFade, previewAuto: r.previewAuto, previewSync: r.previewSync, stemEngine: r.stemEngine, aiOverlap: +r.aiOverlap, aiDevice: r.aiDevice, autoBeatmap: r.autoBeatmap, beatmapMin: clamp(+r.beatmapMin || 90, 10, 900), autosave: r.autosave });
   Autosave.enabled = PREF.autosave;
   savePrefs();
   if (audioChanged) { await Engine.recreate(); toast('Audio engine restarted at ' + (Engine.ctx.sampleRate / 1000).toFixed(1) + ' kHz', 'ok'); }
@@ -364,6 +369,7 @@ function setSideTab(t) {
 }
 
 function initShell() {
+  setTimeout(() => { if (PREF.stemEngine !== 'dsp') AI.ready(); }, 1500);
   Autosave.enabled = PREF.autosave;
   Recent.load();
   Explorer.init();

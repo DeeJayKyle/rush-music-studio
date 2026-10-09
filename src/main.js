@@ -59,6 +59,7 @@ function renderPool() {
         { label: 'Add to new track at the cursor', action: () => { Arrange.placeAsset(A, P.tracks.length, P.cursor); setView('arrange'); } },
         { label: 'Open in Editor', action: () => Editor.open(A.id) },
         { label: 'Load to stems deck', action: () => { setView('stems'); Deck.load(A.id); } },
+        { label: 'Separate again with AI (HTDemucs)', disabled: !(A.stems.state === 'done' && A.stems.engine !== 'ai' && AI.status === 'ready'), action: () => { A.stems = { state: 'none', buffers: null, peaks: null, promise: null, ms: 0 }; bus.emit('assets'); setView('stems'); Deck.load(A.id); } },
         { label: 'Preview', action: () => { Engine.halt(); Engine.playBuffer(A.buffer); } },
         { label: 'Stop preview', action: () => Engine.stopPreview() },
         { label: 'Rename', action: async () => { const r = await showDialog({ title: 'Rename file', fields: [{ id: 'n', label: 'Name', value: A.name }], ok: 'Rename' }); if (r && r.n) { A.name = r.n; bus.emit('assets'); Arrange.draw(); markDirty(); } } },

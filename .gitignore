@@ -5,3 +5,4 @@ desktop/release/
 node_modules/
 *.log
 .DS_Store
+desktop/ai/
