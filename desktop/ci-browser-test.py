@@ -1,35 +1,45 @@
 # In-browser check of the AI separator (ONNX Runtime Web, multi-threaded WebAssembly) in headless Chromium.
-import asyncio, subprocess, sys, os, time
+import asyncio, subprocess, sys, os, time, json
 from playwright.async_api import async_playwright
 HERE = os.path.dirname(os.path.abspath(__file__))
+PROBE = """async (dbg) => {
+  const src = document.getElementById('rush-ai-src').textContent;
+  const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+  const base = location.href.replace(/[^/]*$/, '');
+  const manifest = await (await fetch('models/manifest.json')).json();
+  const t0 = performance.now();
+  const r = await new Promise((res) => { w.onmessage = (e) => res(e.data); w.onerror = (e) => res({ type: 'failed', error: e.message });
+    w.postMessage({ type: 'init', base, manifest, cores: navigator.hardwareConcurrency, isolated: self.crossOriginIsolated, prefer: 'cpu', debug: dbg }); });
+  w.terminate();
+  return Object.assign(r, { totalMs: Math.round(performance.now() - t0) });
+}"""
 async def main():
     srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'ci-serve.py'), '8766'])
     time.sleep(1.5)
+    code = 0
     try:
         async with async_playwright() as p:
             b = await p.chromium.launch()
             pg = await b.new_page()
-            errs = []
-            pg.on('pageerror', lambda e: errs.append(str(e)))
+            logs = []
+            pg.on('console', lambda m: logs.append(m.text[:300]) if m.type in ('error', 'warning') else None)
+            pg.on('pageerror', lambda e: logs.append('PAGEERROR ' + str(e)[:300]))
             await pg.goto('http://127.0.0.1:8766/RushMusicStudio.html')
             await pg.wait_for_function("document.querySelector('#statusMsg').textContent.startsWith('Ready')", timeout=60000)
-            ok = await pg.evaluate("AI.ready()")
-            desc = await pg.evaluate("AI.describe()")
-            if not ok:
-                print('::error title=AI stems in browser::' + desc + ' ' + ' | '.join(errs)); return 1
-            r = await pg.evaluate("""(async()=>{
-              const dec = async (u) => Engine.ensure(false).decodeAudioData(await (await fetch(u)).arrayBuffer());
-              const mix = await dec('ci/mix.wav'), drums = await dec('ci/drums.wav'), bass = await dec('ci/bass.wav');
-              const A = addAsset('ci mix', mix, { bpm: 120, beats: 48 });
-              const t0 = performance.now(); await separateAsset(A); const ms = performance.now() - t0;
-              const sdr = (est, ref) => { let s = 0, e = 0; for (let c = 0; c < 2; c++) { const x = est.getChannelData(c), y = ref.getChannelData(c); for (let i = 0; i < y.length; i++) { s += y[i] * y[i]; e += (y[i] - x[i]) ** 2; } } return 10 * Math.log10(s / (e + 1e-12)); };
-              return { engine: A.stems.engine, ms, dur: mix.duration, drums: sdr(A.stems.buffers.drums, drums), bass: sdr(A.stems.buffers.bass, bass), chunk: AI.chunkMs };
-            })()""")
-            msg = f"{desc}: {r['dur']:.0f} s song separated in {r['ms']/1000:.1f} s ({r['dur']/(r['ms']/1000):.2f}x real-time), engine {r['engine']}, SDR drums {r['drums']:.1f} dB, bass {r['bass']:.1f} dB"
-            print(msg); print('::notice title=AI stems in browser::' + msg)
-            if errs: print('::warning title=AI stems in browser::' + ' | '.join(errs)[:900])
+            variants = [('app defaults', {}),
+                        ('no arena', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
+                        ('no arena, basic opt', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False, 'graphOptimizationLevel': 'basic'}}),
+                        ('1 thread, no arena', {'threads': 1, 'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
+                        ('plain wasm runtime', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False}, 'runtime': 'ort.min.js'})]
+            if os.path.exists(os.path.join(HERE, 'ai', 'models', 'htdemucs32.onnx')):
+                variants.append(('fp32 model, no arena', {'model': 'htdemucs32.onnx', 'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}))
+            for name, dbg in variants:
+                logs.clear()
+                r = await pg.evaluate(PROBE, dbg)
+                line = f"{name}: {r.get('type')} {r.get('ep','')} threads={r.get('threads','')} chunk={round(r.get('chunkMs') or 0)}ms total={r['totalMs']}ms {r.get('error','')} | logs: {' / '.join(logs)[:500]}"
+                print(line); print('::notice title=AI variant::' + line)
             await b.close()
-            return 0 if r['engine'] == 'ai' else 1
     finally:
         srv.terminate()
+    return code
 sys.exit(asyncio.run(main()))

@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 rm -rf ai && mkdir -p ai/models ai/ort
 ORT_REPO=https://github.com/microsoft/webnn-developer-preview
 ORT_SHA=12e990b8fc4b8311ec5f869b24732b45241726c8
-FILES="ort.all.min.js ort-wasm-simd-threaded.jsep.mjs ort-wasm-simd-threaded.jsep.wasm ort-wasm-simd-threaded.mjs ort-wasm-simd-threaded.wasm"
+FILES="ort.all.min.js ort.min.js ort-wasm-simd-threaded.jsep.mjs ort-wasm-simd-threaded.jsep.wasm ort-wasm-simd-threaded.mjs ort-wasm-simd-threaded.wasm"
 ok=1
 for f in $FILES; do
   curl -fsSL --retry 5 --retry-delay 5 -o "ai/ort/$f" "https://raw.githubusercontent.com/microsoft/webnn-developer-preview/$ORT_SHA/assets/dist/$f" || { ok=0; break; }

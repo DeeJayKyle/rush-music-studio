@@ -68,17 +68,19 @@ function clampI(v, a, b) { return v < a ? a : v > b ? b : v; }
 if (typeof self !== 'undefined' && typeof importScripts === 'function') {
   let session = null, cfg = null, ep = '', inName = 'mix', outName = 'stems';
   const jobs = new Map();
+  let extraOpts = {};
   async function create(base, model, eps, threads) {
     ort.env.wasm.wasmPaths = base + 'ort/';
     ort.env.wasm.numThreads = threads;
-    ort.env.logLevel = 'error';
-    return ort.InferenceSession.create(base + 'models/' + model, { executionProviders: eps, graphOptimizationLevel: 'all' });
+    ort.env.logLevel = extraOpts.logLevel || 'error';
+    const so = Object.assign({ executionProviders: eps, graphOptimizationLevel: 'all' }, extraOpts.session || {});
+    return ort.InferenceSession.create(base + 'models/' + (extraOpts.model || model), so);
   }
   async function init(m) {
-    importScripts(m.base + 'ort/' + (m.runtime || 'ort.all.min.js'));
-    cfg = m.manifest;
+    importScripts(m.base + 'ort/' + ((m.debug && m.debug.runtime) || m.runtime || 'ort.all.min.js'));
+    cfg = m.manifest; extraOpts = m.debug || {};
     const iso = self.crossOriginIsolated || (m.isolated && typeof SharedArrayBuffer !== 'undefined');
-    const c = m.cores || 4, threads = iso ? Math.min(16, c <= 4 ? c : c - 1) : 1;
+    const c = m.cores || 4, threads = extraOpts.threads || (iso ? Math.min(16, c <= 4 ? c : c - 1) : 1);
     const tries = [];
     if (m.prefer !== 'cpu' && self.navigator && navigator.gpu) {
       try { const ad = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); if (ad) tries.push(['webgpu', 'wasm']); } catch (e) { }
