@@ -75,7 +75,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq xvfb > /dev/null 2>&1
           RUSH_SELFTEST=1 timeout 300 xvfb-run -a desktop/release/linux-unpacked/rush-music-studio --no-sandbox > st.log 2>&1
-          out=$(grep RUSH_SELFTEST st.log | tail -1); logs=$(grep RUSH_AI_LOG st.log | tail -c 900 | tr '\n' ' ')
+          out=$(grep RUSH_SELFTEST st.log | tail -1); logs=$(grep RUSH_AI_LOG st.log | grep -v GetPciBusId | tail -c 900 | tr '\n' ' ')
           echo "$out"; echo "$logs"
           echo "::notice title=Packaged app self-test::${out:-no output}"
           [ -n "$logs" ] && echo "::warning title=Native AI log::$logs"; true

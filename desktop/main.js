@@ -35,7 +35,7 @@ function createWindow() {
       try {
         const r = await win.webContents.executeJavaScript(`(async () => {
           for (let i = 0; i < 120 && !/^Ready/.test((document.querySelector('#statusMsg') || {}).textContent || ''); i++) await new Promise((r) => setTimeout(r, 500));
-          const ok = await AI.ready();
+          const tr = performance.now(); const ok = await AI.ready(); const readyMs = Math.round(performance.now() - tr);
           let sep = null;
           if (ok) {
             const sr = 44100, n = sr * 20, L = new Float32Array(n), R = new Float32Array(n);
@@ -43,7 +43,7 @@ function createWindow() {
             const A = addAsset('selftest', makeBuffer([L, R], sr), { bpm: 120, beats: 40 });
             const t0 = performance.now(); await separateAsset(A); sep = { engine: A.stems.engine, seconds: +((performance.now() - t0) / 1000).toFixed(1), realtime: +(20 / ((performance.now() - t0) / 1000)).toFixed(2) };
           }
-          return JSON.stringify({ ok, desc: AI.describe(), nativeErr: AI.nativeErr, desktop: !!window.rushDesktop, isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
+          return JSON.stringify({ ok, readyMs, desc: AI.describe(), nativeErr: AI.nativeErr, desktop: !!window.rushDesktop, isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
         })()`);
         console.log('RUSH_SELFTEST ' + r);
       } catch (e) { console.log('RUSH_SELFTEST error ' + e.message); }
@@ -79,7 +79,7 @@ app.whenReady().then(() => {
       aiProc.on('exit', () => { aiProc = null; });
     }
     const { port1, port2 } = new MessageChannelMain();
-    aiProc.postMessage({ type: 'port' }, [port1]);
+    aiProc.postMessage({ type: 'port' }, [port1]); console.log('RUSH_AI_LOG port sent');
     e.sender.postMessage('rush-ai-port', null, [port2]);
   });
   createWindow();

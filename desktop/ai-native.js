@@ -26,11 +26,13 @@ async function init(m) {
   let last = null;
   for (const [name, provider] of tries) {
     try {
+      console.log('creating session on ' + name);
       session = await ort.InferenceSession.create(path.join(aiDir, 'models', cfg.model), { executionProviders: [provider], intraOpNumThreads: threads, graphOptimizationLevel: 'all' });
-      ep = name;
+      ep = name; console.log('session ready on ' + name);
       const t0 = Date.now();
       const y = await runChunk(new Float32Array(2 * cfg.segment).map((_, i) => Math.sin(i * 0.05) * 0.3));
       for (let i = 0; i < y.length; i += 997) if (!isFinite(y[i])) throw new Error('invalid output on ' + name);
+      console.log('first window in ' + (Date.now() - t0) + ' ms');
       return { ep, threads, chunkMs: Date.now() - t0, native: true };
     } catch (e) { last = e; session = null; }
   }
@@ -41,8 +43,9 @@ function serve(port) {
   const send = (msg) => port.postMessage(msg);
   port.on('message', async (ev) => {
     const m = ev.data;
+    if (m && m.type !== 'focus') console.log('message ' + m.type);
     try {
-      if (m.type === 'init') { if (!session) send({ type: 'ready', ...(await init(m)) }); else send({ type: 'ready', ep, threads, chunkMs: 0, native: true }); return; }
+      if (m.type === 'init') { const info = session ? { ep, threads, chunkMs: 0, native: true } : await init(m); send({ type: 'ready', ...info }); console.log('sent ready'); return; }
       if (m.type === 'focus') { const j = jobs.get(m.id); if (j) j.focus = m.at; return; }
       if (m.type === 'cancel') { const j = jobs.get(m.id); if (j) j.cancel = true; return; }
       if (m.type === 'separate') {

@@ -34,7 +34,7 @@ const AI = (() => {
         });
         if (!port) st.nativeErr = 'no channel to the native separator';
         else if (await start(port, true)) return true;
-        else st.nativeErr = st.err;
+        else st.nativeErr = st.err || 'no reply from the native separator';
       }
       const src = document.getElementById('rush-ai-src').textContent;
       return start(new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))), false);
@@ -48,7 +48,8 @@ const AI = (() => {
         w.onmessage = (ev) => {
           const m = ev.data;
           if (m.type === 'ready') { st.ep = m.ep; st.threads = m.threads; st.chunkMs = m.chunkMs; st.diag = m; res(true); return; }
-          if (m.type === 'failed') { st.err = m.error; res(false); return; }
+          if (m.type === 'failed') { st.err = m.error || 'failed'; res(false); return; }
+          if (m.type === 'log') { console.log('AI:', m.text); return; }
           const j = st.jobs.get(m.id); if (!j) return;
           if (m.type === 'region') j.region(m.a, m.b, m.data);
           else if (m.type === 'progress') j.progress(m.p);
@@ -57,7 +58,7 @@ const AI = (() => {
         };
         w.onerror = (e) => { st.err = e.message || 'worker error'; res(false); };
         w.postMessage({ type: 'init', base: base(), manifest: st.manifest, cores: navigator.hardwareConcurrency || 4, isolated: self.crossOriginIsolated, prefer: (typeof PREF !== 'undefined' && PREF.aiDevice) || 'auto', runtime: st.manifest.runtime });
-        if (native) setTimeout(() => res(false), 180000);
+        if (native) setTimeout(() => { st.err = 'timed out after 180 s'; res(false); }, 180000);
       });
       if (!ok) { console.warn('AI stems unavailable' + (native ? ' (native)' : '') + ':', st.err); try { w.terminate ? w.terminate() : w.close(); } catch (e) { } st.worker = null; if (native) return false; }
       st.status = ok ? 'ready' : 'failed';
