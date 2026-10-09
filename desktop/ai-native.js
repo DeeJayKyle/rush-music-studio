@@ -19,7 +19,7 @@ async function runChunk(x) {
 async function init(m) {
   try { ort = require('onnxruntime-node'); } catch (e) { console.error('cannot load onnxruntime-node: ' + e.stack); throw e; }
   cfg = JSON.parse(fs.readFileSync(path.join(aiDir, 'models', 'manifest.json'), 'utf8'));
-  threads = Math.max(1, Math.min(16, os.cpus().length));
+  threads = Math.max(1, Math.min(16, os.cpus().length));   // reported only: ONNX Runtime picks the physical cores itself
   const tries = [];
   if (m.prefer !== 'cpu' && process.platform === 'win32') tries.push(['dml', 'dml']);
   tries.push(['cpu', 'cpu']);
@@ -27,7 +27,7 @@ async function init(m) {
   for (const [name, provider] of tries) {
     try {
       console.log('creating session on ' + name);
-      session = await ort.InferenceSession.create(path.join(aiDir, 'models', cfg.model), { executionProviders: [provider], intraOpNumThreads: threads, graphOptimizationLevel: 'all' });
+      session = await ort.InferenceSession.create(path.join(aiDir, 'models', cfg.model), { executionProviders: [provider], graphOptimizationLevel: 'all' });
       ep = name; console.log('session ready on ' + name);
       const t0 = Date.now();
       const y = await runChunk(new Float32Array(2 * cfg.segment).map((_, i) => Math.sin(i * 0.05) * 0.3));
@@ -43,7 +43,8 @@ function serve(port) {
   const send = (msg) => port.postMessage(msg);
   port.on('message', async (ev) => {
     const m = ev.data;
-    if (m && m.type !== 'focus') console.log('message ' + m.type);
+    if (!m || typeof m !== 'object') return;
+    if (m.type !== 'focus') console.log('message ' + m.type);
     try {
       if (m.type === 'init') { const info = session ? { ep, threads, chunkMs: 0, native: true } : await init(m); send({ type: 'ready', ...info }); console.log('sent ready'); return; }
       if (m.type === 'focus') { const j = jobs.get(m.id); if (j) j.focus = m.at; return; }

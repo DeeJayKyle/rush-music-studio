@@ -109,7 +109,7 @@ const AI = (() => {
           fail: (e) => { st.jobs.delete(id); reject(e); },
         };
         st.jobs.set(id, job);
-        st.worker.postMessage({ type: 'separate', id, L, R, at: Math.round(from * sr), overlap: overlap ?? (typeof PREF !== 'undefined' && PREF.aiOverlap) ?? 0.25 }, [L.buffer, R.buffer]);
+        st.worker.postMessage({ type: 'separate', id, L, R, at: Math.round(from * sr), overlap: overlap ?? (typeof PREF !== 'undefined' && PREF.aiOverlap) ?? 0.25 }, st.native ? [] : [L.buffer, R.buffer]);   // the native bridge copies
       })().catch(reject);
     });
     return {

@@ -90,6 +90,7 @@ app.whenReady().then(() => {
     e.sender.postMessage('rush-ai-port', null, [port2]);
   });
   app.on('before-quit', () => { if (aiProc) aiProc.kill(); });
+  process.on('exit', () => { if (aiProc) aiProc.kill(); });
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());
