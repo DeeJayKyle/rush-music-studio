@@ -6,6 +6,7 @@ const { StemNet } = new Function(src('fft.js') + '\n' + src('stemnet.js') + '\nr
 (async () => {
   const [model, inp, outp, variant] = process.argv.slice(2);
   const wasm = fs.readFileSync(path.join(__dirname, '..', 'src', 'kernels', variant === 'fma' ? 'kernels_fma.wasm' : 'kernels.wasm'));
+  if (!WebAssembly.validate(wasm)) { console.log(JSON.stringify({ skipped: 'relaxed SIMD not supported by this Node' })); return; }
   const mb = fs.readFileSync(model);
   const net = await StemNet.create({ wasm, model: mb.buffer.slice(mb.byteOffset, mb.byteOffset + mb.byteLength), backend: 'cpu' });
   const ib = fs.readFileSync(inp), x = new Float32Array(ib.buffer.slice(ib.byteOffset, ib.byteOffset + ib.byteLength)), n = x.length / 2;

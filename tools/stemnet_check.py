@@ -20,10 +20,13 @@ for variant in ('simd', 'fma'):
     r = subprocess.run(['node', os.path.join(HERE, 'stemnet_check.js'), model, os.path.join(d, 'in.f32'), os.path.join(d, 'out.f32'), variant], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout, r.stderr); res.append((variant, None, None)); continue
+    info = json.loads(r.stdout)
+    if 'skipped' in info:
+        print(variant, 'skipped:', info['skipped']); continue
     out = np.fromfile(os.path.join(d, 'out.f32'), np.float32).reshape(4, 2, n)
     sdr = [10 * np.log10((ref[s] ** 2).sum() / ((ref[s] - out[s]) ** 2).sum()) for s in range(4)]
-    res.append((variant, min(sdr), json.loads(r.stdout)['ms']))
-ok = all(v is not None and v > 50 for _, v, _ in res)
+    res.append((variant, min(sdr), info['ms']))
+ok = bool(res) and all(v is not None and v > 50 for _, v, _ in res)
 msg = ' | '.join(f'{k}: agreement {v:.1f} dB in {ms} ms' if v is not None else f'{k}: failed' for k, v, ms in res)
 print(('::notice' if ok else '::error') + ' title=Neural engine vs reference::' + msg)
 sys.exit(0 if ok else 1)
