@@ -48,6 +48,11 @@
         }
       ],
       "files": [
+        "main.js",
+        "preload.js",
+        "ai-native.js",
+        "app/**/*",
+        "node_modules/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
         "!node_modules/onnxruntime-node/bin/napi-v*/linux/**",
         "!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**"
@@ -74,6 +79,11 @@
       "category": "public.app-category.music",
       "identity": null,
       "files": [
+        "main.js",
+        "preload.js",
+        "ai-native.js",
+        "app/**/*",
+        "node_modules/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
         "!node_modules/onnxruntime-node/bin/napi-v*/linux/**"
       ]
@@ -96,6 +106,11 @@
       "category": "Audio",
       "maintainer": "Rush Music Studio contributors",
       "files": [
+        "main.js",
+        "preload.js",
+        "ai-native.js",
+        "app/**/*",
+        "node_modules/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
         "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
         "!node_modules/onnxruntime-node/bin/napi-v*/linux/arm64/**"

@@ -32,7 +32,9 @@ const AI = (() => {
           window.rushDesktop.requestAIPort();
           setTimeout(() => { window.removeEventListener('message', on); res(null); }, 8000);
         });
-        if (port && (await start(port, true))) return true;
+        if (!port) st.nativeErr = 'no channel to the native separator';
+        else if (await start(port, true)) return true;
+        else st.nativeErr = st.err;
       }
       const src = document.getElementById('rush-ai-src').textContent;
       return start(new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))), false);
@@ -121,5 +123,5 @@ const AI = (() => {
     if (st.status === 'failed') return 'AI separator could not start (' + st.err + '): using the fast separator';
     return 'Fast separator (the AI model ships with the desktop app)';
   }
-  return { probe, ready, separate, describe, get status() { return st.status; }, get ep() { return st.ep; }, get chunkMs() { return st.chunkMs; } };
+  return { probe, ready, separate, describe, get nativeErr() { return st.nativeErr || ''; }, get status() { return st.status; }, get ep() { return st.ep; }, get chunkMs() { return st.chunkMs; } };
 })();

@@ -43,7 +43,7 @@ function createWindow() {
             const A = addAsset('selftest', makeBuffer([L, R], sr), { bpm: 120, beats: 40 });
             const t0 = performance.now(); await separateAsset(A); sep = { engine: A.stems.engine, seconds: +((performance.now() - t0) / 1000).toFixed(1), realtime: +(20 / ((performance.now() - t0) / 1000)).toFixed(2) };
           }
-          return JSON.stringify({ ok, desc: AI.describe(), isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
+          return JSON.stringify({ ok, desc: AI.describe(), nativeErr: AI.nativeErr, desktop: !!window.rushDesktop, isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
         })()`);
         console.log('RUSH_SELFTEST ' + r);
       } catch (e) { console.log('RUSH_SELFTEST error ' + e.message); }
@@ -74,7 +74,8 @@ app.whenReady().then(() => {
   ipcMain.on('rush-ai-port', (e) => {
     if (!fs.existsSync(path.join(aiDir, 'models', 'manifest.json'))) return;
     if (!aiProc) {
-      aiProc = utilityProcess.fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { serviceName: 'Rush AI stem separator' });
+      aiProc = utilityProcess.fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { serviceName: 'Rush AI stem separator', stdio: 'pipe' });
+      for (const s of [aiProc.stdout, aiProc.stderr]) if (s) s.on('data', (d) => console.log('RUSH_AI_LOG ' + String(d).trim().slice(0, 500)));
       aiProc.on('exit', () => { aiProc = null; });
     }
     const { port1, port2 } = new MessageChannelMain();

@@ -17,7 +17,7 @@ async function runChunk(x) {
   return r[session.outputNames[0]].data;
 }
 async function init(m) {
-  ort = require('onnxruntime-node');
+  try { ort = require('onnxruntime-node'); } catch (e) { console.error('cannot load onnxruntime-node: ' + e.stack); throw e; }
   cfg = JSON.parse(fs.readFileSync(path.join(aiDir, 'models', 'manifest.json'), 'utf8'));
   threads = Math.max(1, Math.min(16, os.cpus().length));
   const tries = [];
@@ -34,6 +34,7 @@ async function init(m) {
       return { ep, threads, chunkMs: Date.now() - t0, native: true };
     } catch (e) { last = e; session = null; }
   }
+  console.error('native AI failed: ' + (last && last.stack || last));
   throw last || new Error('ONNX Runtime could not start');
 }
 function serve(port) {
