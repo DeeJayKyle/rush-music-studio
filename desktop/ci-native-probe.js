@@ -1,7 +1,7 @@
 // CI: time one HTDemucs window with the onnxruntime-node copy packaged in the app, run by the Electron binary as Node.
 const path = require('path'), fs = require('fs');
 const [res] = process.argv.slice(2);
-const ort = require(path.join(res, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node'));
+const ort = require(path.join(res, 'app.asar', 'node_modules', 'onnxruntime-node'));
 const core = new Function(fs.readFileSync(path.join(__dirname, '..', 'src', 'aiworker.js'), 'utf8') + '\nreturn { HTD };')();
 const cfg = JSON.parse(fs.readFileSync(path.join(res, 'ai', 'models', 'manifest.json'), 'utf8'));
 (async () => {

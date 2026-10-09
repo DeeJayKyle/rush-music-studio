@@ -77,10 +77,11 @@ jobs:
           ELECTRON_RUN_AS_NODE=1 timeout 240 desktop/release/linux-unpacked/rush-music-studio desktop/ci-native-probe.js "$PWD/desktop/release/linux-unpacked/resources" > probe.log 2>&1 || true
           echo "::notice title=Native probe::$(grep PROBE probe.log | tr '\n' ' ' | tail -c 900) $(tail -c 300 probe.log | tr '\n' ' ')"
           RUSH_SELFTEST=1 timeout 400 xvfb-run -a desktop/release/linux-unpacked/rush-music-studio --no-sandbox > st.log 2>&1 || true
-          out=$(grep RUSH_SELFTEST st.log | tail -1); logs=$(grep RUSH_AI_LOG st.log | grep -v GetPciBusId | tail -c 900 | tr '\n' ' ')
-          echo "$out"; echo "$logs"
+          out=$(grep RUSH_SELFTEST st.log | tail -1 || true); logs=$(grep RUSH_AI_LOG st.log | grep -v GetPciBusId | tail -c 900 | tr '\n' ' ' || true)
           echo "::notice title=Packaged app self-test::${out:-no output}"
-          [ -n "$logs" ] && echo "::warning title=Native AI log::$logs"; true
+          echo "::warning title=Native AI log::${logs:-none}"
+          echo "::warning title=App log tail::$(grep -v GetPciBusId st.log | tail -c 700 | tr '\n' ' ')"
+          true
       - name: Report build error
         if: failure()
         shell: bash
