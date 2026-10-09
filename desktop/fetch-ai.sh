@@ -10,12 +10,18 @@ ORT_REPO=https://github.com/microsoft/webnn-developer-preview
 ORT_SHA=12e990b8fc4b8311ec5f869b24732b45241726c8
 FILES="ort.all.min.js ort-wasm-simd-threaded.jsep.mjs ort-wasm-simd-threaded.jsep.wasm ort-wasm-simd-threaded.mjs ort-wasm-simd-threaded.wasm"
 ok=1
-if git clone -q --filter=blob:none --no-checkout "$ORT_REPO" ortsrc && (cd ortsrc && git checkout -q "$ORT_SHA" -- $(for f in $FILES; do echo assets/dist/$f; done)); then
-  for f in $FILES; do cp "ortsrc/assets/dist/$f" ai/ort/; done
-else
-  echo "::warning title=AI stems::Could not fetch ONNX Runtime Web"; ok=0
+for f in $FILES; do
+  curl -fsSL --retry 5 --retry-delay 5 -o "ai/ort/$f" "https://raw.githubusercontent.com/microsoft/webnn-developer-preview/$ORT_SHA/assets/dist/$f" || { ok=0; break; }
+done
+if [ $ok = 0 ]; then   # fall back to git
+  ok=1
+  if git clone -q --filter=blob:none --no-checkout "$ORT_REPO" ortsrc 2>ort.log && (cd ortsrc && git checkout -q "$ORT_SHA" -- $(for f in $FILES; do echo assets/dist/$f; done)) 2>>ort.log; then
+    for f in $FILES; do cp "ortsrc/assets/dist/$f" ai/ort/; done
+  else
+    echo "::warning title=AI stems::Could not fetch ONNX Runtime Web: $(tail -c 400 ort.log | tr '\n' ' ')"; ok=0
+  fi
+  rm -rf ortsrc ort.log
 fi
-rm -rf ortsrc
 MODEL_URL=https://huggingface.co/adowu/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx
 if [ $ok = 1 ] && curl -fsSL --retry 5 --retry-delay 10 -o ai/models/htdemucs.onnx "$MODEL_URL"; then
   size=$(wc -c < ai/models/htdemucs.onnx)

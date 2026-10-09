@@ -62,8 +62,15 @@ const sdr = (est, ref) => { let s = 0, e = 0; for (let c = 0; c < 2; c++) for (l
   const dsp = dspSeparate(mixL.slice(), mixR.slice(), sr, {}).stems;
   const rows = [];
   for (const k of ['vocals', 'drums', 'bass', 'other']) rows.push(`${k}: AI ${sdr(got[k], truth[k]).toFixed(1)} dB vs fast ${sdr(dsp[k], truth[k]).toFixed(1)} dB`);
+  const mixOf = (a, b) => [0, 1].map((c) => a[c].map((v, i) => v + b[c][i]));
+  rows.push(`vocals+other: AI ${sdr(mixOf(got.vocals, got.other), mixOf(truth.vocals, truth.other)).toFixed(1)} dB vs fast ${sdr(mixOf(dsp.vocals, dsp.other), mixOf(truth.vocals, truth.other)).toFixed(1)} dB`);
   const msg = `HTDemucs loaded in ${(load / 1000).toFixed(1)} s; ${runs} windows at ${(runMs / runs / 1000).toFixed(2)} s each (${(secs / (runMs / 1000)).toFixed(1)}x real-time on the CI CPU). SDR ` + rows.join(' | ');
   console.log(msg);
   console.log('::notice title=AI stem quality::' + msg);
+  // hand the same song to the in-browser check (ci-browser-test.py)
+  const wav = (chs) => { const nn = chs[0].length, b = Buffer.alloc(44 + nn * 8); b.write('RIFF', 0); b.writeUInt32LE(36 + nn * 8, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(3, 20); b.writeUInt16LE(2, 22); b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 8, 28); b.writeUInt16LE(8, 32); b.writeUInt16LE(32, 34); b.write('data', 36); b.writeUInt32LE(nn * 8, 40); for (let i = 0; i < nn; i++) { b.writeFloatLE(chs[0][i], 44 + i * 8); b.writeFloatLE(chs[1][i], 48 + i * 8); } return b; };
+  fs.mkdirSync(path.join(__dirname, 'app', 'ci'), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, 'app', 'ci', 'mix.wav'), wav([mixL, mixR]));
+  for (const k of ['drums', 'bass']) fs.writeFileSync(path.join(__dirname, 'app', 'ci', k + '.wav'), wav(truth[k]));
   if (!rows.length || !isFinite(sdr(got.drums, truth.drums))) { console.log('::error title=AI stems::separation produced no output'); process.exit(1); }
 })().catch((e) => { console.log('::error title=AI stems::' + String(e && e.stack || e).replace(/\n/g, ' | ')); process.exit(1); });

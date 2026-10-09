@@ -39,6 +39,12 @@ jobs:
         run: |
           npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ortn" onnxruntime-node > /dev/null 2>&1
           node desktop/ci-ai-test.js "$RUNNER_TEMP/ortn/node_modules/onnxruntime-node"
+          pip install -q playwright && python -m playwright install --with-deps chromium > /dev/null 2>&1
+          python desktop/ci-browser-test.py
+      - name: Remove test files from the app folder
+        if: always()
+        shell: bash
+        run: rm -rf desktop/app/ci
       - name: Install build tools
         working-directory: desktop
         shell: bash
