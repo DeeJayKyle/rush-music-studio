@@ -51,12 +51,13 @@ function serve(port) {
       if (m.type === 'cancel') { const j = jobs.get(m.id); if (j) j.cancel = true; return; }
       if (m.type === 'separate') {
         const job = { focus: m.at || 0, cancel: false }; jobs.set(m.id, job);
+        console.log('separate: L is ' + Object.prototype.toString.call(m.L) + ' of ' + (m.L && m.L.length) + ' samples');
         const t0 = Date.now();
         await core.separateCore({
           L: m.L, R: m.R, seg: cfg.segment, overlap: m.overlap ?? 0.25, nStems: cfg.stems.length, run: runChunk,
           focus: () => job.focus, cancelled: () => job.cancel,
           onRegion: (a, b, data) => send({ type: 'region', id: m.id, a, b, data }),
-          onProgress: (p) => send({ type: 'progress', id: m.id, p }),
+          onProgress: (p) => { console.log('progress ' + p.toFixed(2)); send({ type: 'progress', id: m.id, p }); },
         });
         jobs.delete(m.id);
         send({ type: 'done', id: m.id, ms: Date.now() - t0 });

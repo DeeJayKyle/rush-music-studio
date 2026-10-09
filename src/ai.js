@@ -50,7 +50,7 @@ const AI = (() => {
           if (m.type === 'ready') { st.ep = m.ep; st.threads = m.threads; st.chunkMs = m.chunkMs; st.diag = m; res(true); return; }
           if (m.type === 'failed') { st.err = m.error || 'failed'; res(false); return; }
           if (m.type === 'log') { console.log('AI:', m.text); return; }
-          const j = st.jobs.get(m.id); if (!j) return;
+          const j = st.jobs.get(m.id); if (!j) { if (m.type !== 'progress') console.log('AI message for unknown job ' + m.id + ' ' + m.type); return; }
           if (m.type === 'region') j.region(m.a, m.b, m.data);
           else if (m.type === 'progress') j.progress(m.p);
           else if (m.type === 'done') j.done(m.ms);

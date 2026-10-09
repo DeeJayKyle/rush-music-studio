@@ -32,6 +32,7 @@ function createWindow() {
   win.loadURL('rush://app/RushMusicStudio.html');
   // CI self-test: report whether the packaged app can start the AI separator, then quit
   if (process.env.RUSH_SELFTEST) {
+    win.webContents.on('console-message', (e, level, msg) => { if (/AI|separat|stem/i.test(msg)) console.log('RUSH_AI_LOG page: ' + String(msg).slice(0, 300)); });
     win.webContents.once('did-finish-load', async () => {
       try {
         const r = await win.webContents.executeJavaScript(`(async () => {
@@ -79,7 +80,7 @@ app.whenReady().then(() => {
     if (!aiProc) {
       aiProc = fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, serialization: 'advanced', stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       for (const st of [aiProc.stdout, aiProc.stderr]) st.on('data', (d) => console.log('RUSH_AI_LOG ' + String(d).trim().slice(0, 500)));
-      aiProc.on('message', ({ ch, m }) => { const p = chans.get(ch); if (p) p.postMessage(m); });
+      aiProc.on('message', ({ ch, m }) => { const p = chans.get(ch); if (process.env.RUSH_SELFTEST && m.type !== 'progress') console.log('RUSH_AI_LOG to page: ' + m.type + (p ? '' : ' (no channel)')); if (p) p.postMessage(m); });
       aiProc.on('exit', (code) => { console.log('RUSH_AI_LOG separator exited ' + code); aiProc = null; for (const p of chans.values()) p.postMessage({ type: 'failed', error: 'native separator stopped' }); chans.clear(); });
     }
     const { port1, port2 } = new MessageChannelMain(), ch = ++chanSeq;
