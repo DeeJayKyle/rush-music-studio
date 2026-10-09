@@ -220,6 +220,7 @@ const Explorer = (() => {
     const inf = X.info.get(k) || {};
     const A = addAsset(n.name.replace(/\.[^.]+$/, ''), buf, inf.bpm && buf.duration <= 95 ? { bpm: inf.bpm, beats: buf.duration * inf.bpm / 60, isLoop: inf.isLoop, key: inf.key, downbeat: inf.isLoop ? 0 : inf.firstBeat } : {});
     A.srcKey = k;
+    if (!A.analyzing) StemPrep.consider(A);
     status('Ready');
     return A;
   }

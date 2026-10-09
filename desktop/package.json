@@ -1,7 +1,7 @@
 {
   "name": "rush-music-studio",
   "productName": "Rush Music Studio",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Offline, open-source music studio: multitrack arranger, audio editor, plugin rack, AI stem separation (HTDemucs), mastering and mixer.",
   "main": "main.js",
   "license": "MIT",
@@ -26,10 +26,7 @@
     },
     "files": [
       "main.js",
-      "preload.js",
-      "ai-native.js",
-      "app/**/*",
-      "node_modules/**/*"
+      "app/**/*"
     ],
     "artifactName": "RushMusicStudio-${version}-${os}-${arch}.${ext}",
     "win": {
@@ -46,16 +43,6 @@
             "x64"
           ]
         }
-      ],
-      "files": [
-        "main.js",
-        "preload.js",
-        "ai-native.js",
-        "app/**/*",
-        "node_modules/**/*",
-        "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
-        "!node_modules/onnxruntime-node/bin/napi-v*/linux/**",
-        "!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**"
       ]
     },
     "portable": {
@@ -77,16 +64,7 @@
         }
       ],
       "category": "public.app-category.music",
-      "identity": null,
-      "files": [
-        "main.js",
-        "preload.js",
-        "ai-native.js",
-        "app/**/*",
-        "node_modules/**/*",
-        "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
-        "!node_modules/onnxruntime-node/bin/napi-v*/linux/**"
-      ]
+      "identity": null
     },
     "linux": {
       "target": [
@@ -104,17 +82,7 @@
         }
       ],
       "category": "Audio",
-      "maintainer": "Rush Music Studio contributors",
-      "files": [
-        "main.js",
-        "preload.js",
-        "ai-native.js",
-        "app/**/*",
-        "node_modules/**/*",
-        "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
-        "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
-        "!node_modules/onnxruntime-node/bin/napi-v*/linux/arm64/**"
-      ]
+      "maintainer": "Rush Music Studio contributors"
     },
     "extraResources": [
       {
@@ -124,16 +92,10 @@
           "**/*"
         ]
       }
-    ],
-    "asarUnpack": [
-      "node_modules/onnxruntime-node/**"
     ]
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/DeeJayKyle/rush-music-studio.git"
-  },
-  "dependencies": {
-    "onnxruntime-node": "^1.22.0"
   }
 }

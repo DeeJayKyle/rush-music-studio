@@ -75,6 +75,7 @@ async function analyzeAsset(A) {
     A.bpm = r.bpm; A.beats = r.beats; A.isLoop = r.isLoop; A.key = r.key; A.downbeat = r.isLoop ? 0 : (r.firstBeat || 0);
   } catch (e) { console.warn(e); }
   A.analyzing = false; bus.emit('assets'); bus.emit('assetMeta', A);
+  StemPrep.consider(A);
 }
 function assetChanged(A, newBuffer) {
   if (newBuffer) A.buffer = newBuffer;
@@ -247,23 +248,108 @@ function separateAsset(A, onProgress, opts = {}) {
   if (A.stems.state === 'done') return Promise.resolve(A.stems);
   if (A.stems.state === 'running') {
     if (onProgress) A.stems.onProgress = onProgress;
-    if (opts.from != null && A.stems.ai) A.stems.ai.focus(opts.from);
+    if (!opts.background) { A.stems.background = false; if (A.stems.ai) A.stems.ai.focus(opts.from != null ? opts.from : 0, 2); }
     return A.stems.starting;
   }
   const t0 = performance.now();
-  A.stems.state = 'running'; A.stems.onProgress = onProgress; A.stems.progress = 0;
+  A.stems.state = 'running'; A.stems.onProgress = onProgress; A.stems.progress = 0; A.stems.background = !!opts.background;
   bus.emit('assets');
   const useAI = !opts.dsp && !(typeof PREF !== 'undefined' && PREF.stemEngine === 'dsp');
-  A.stems.starting = (async () => (useAI && (await AI.ready()) ? separateAssetAI(A, t0, opts) : separateAssetDSP(A, t0)))();
+  A.stems.starting = (async () => {
+    // pre-analysed earlier (this session or a previous one)? load it instantly
+    if (useAI) { const hit = await StemCache.load(A); if (hit) return hit; }
+    return useAI && (await AI.ready()) ? separateAssetAI(A, t0, opts) : separateAssetDSP(A, t0);
+  })();
   return A.stems.starting;
 }
+
+// ---- stem cache: AI stems of every song are kept on this computer (16-bit, IndexedDB) ----
+const StemCache = (() => {
+  let dbp = null;
+  const db = () => dbp || (dbp = new Promise((res, rej) => { const r = indexedDB.open('rush-stems', 1); r.onupgradeneeded = () => { r.result.createObjectStore('data'); r.result.createObjectStore('index'); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }));
+  const req = (store, mode, fn) => db().then((d) => new Promise((res, rej) => { const tx = d.transaction(store, mode), q = fn(tx.objectStore(store)); tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); }));
+  // content fingerprint: length, rate and a spread of samples (cheap, stable across sessions)
+  function key(A) {
+    const b = A.buffer, n = b.length; let h1 = 2166136261 ^ n, h2 = b.sampleRate | 0;
+    for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let k = 0; k < 4096; k++) { const v = Math.round(d[Math.floor((k + 0.5) * n / 4096)] * 32767) | 0; h1 = Math.imul(h1 ^ v, 16777619); h2 = Math.imul(h2 + v, 2246822519) ^ (h2 >>> 13); } }
+    return 'v1:' + n + ':' + b.sampleRate + ':' + (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
+  }
+  const NAMES = ['vocals', 'melody', 'bass', 'drums'];
+  async function save(A) {
+    try {
+      if (A.stems.engine !== 'ai' || !A.stems.buffers) return;
+      const k = key(A), parts = [];
+      for (const s of NAMES) { const b = A.stems.buffers[s]; for (let c = 0; c < 2; c++) { const d = b.getChannelData(Math.min(c, b.numberOfChannels - 1)), q = new Int16Array(d.length); for (let i = 0; i < d.length; i++) { const v = d[i] * 32767; q[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v; } parts.push(q); } }
+      const bytes = parts.reduce((a, p) => a + p.byteLength, 0);
+      await req('data', 'readwrite', (st) => st.put({ sr: A.buffer.sampleRate, parts }, k));
+      await req('index', 'readwrite', (st) => st.put({ bytes, used: Date.now(), name: A.name }, k));
+      A.stems.cacheKey = k;
+      prune();
+    } catch (e) { console.warn('Could not keep the stems:', e); }
+  }
+  async function load(A) {
+    try {
+      const k = key(A), meta = await req('index', 'readonly', (st) => st.get(k));
+      if (!meta) return null;
+      const rec = await req('data', 'readonly', (st) => st.get(k));
+      if (!rec || rec.parts.length !== 8) return null;
+      const bufs = {};
+      NAMES.forEach((s, i) => { bufs[s] = makeBuffer([0, 1].map((c) => { const q = rec.parts[i * 2 + c], d = new Float32Array(q.length); for (let j = 0; j < q.length; j++) d[j] = q[j] / 32767; return d; }), rec.sr); });
+      A.stems.buffers = bufs; A.stems.peaks = {}; for (const s in bufs) A.stems.peaks[s] = computePeaks(bufs[s]);
+      A.stems.engine = 'ai'; A.stems.state = 'done'; A.stems.ms = 0; A.stems.cached = true; A.stems.cacheKey = k; A.stems.promise = null;
+      req('index', 'readwrite', (st) => st.put(Object.assign(meta, { used: Date.now() }), k)).catch(() => { });
+      bus.emit('assets'); bus.emit('stemsDone', A);
+      return A.stems;
+    } catch (e) { return null; }
+  }
+  async function has(A) { try { return !!(await req('index', 'readonly', (st) => st.get(key(A)))); } catch (e) { return false; } }
+  // keep the cache under the size limit (least recently used songs go first)
+  async function prune() {
+    const cap = ((typeof PREF !== 'undefined' && PREF.stemCacheGB) || 4) * 1e9;
+    const keys = await req('index', 'readonly', (st) => st.getAllKeys()), vals = await req('index', 'readonly', (st) => st.getAll());
+    const items = keys.map((k, i) => ({ k, ...vals[i] })).sort((a, b) => a.used - b.used);
+    let total = items.reduce((a, it) => a + it.bytes, 0);
+    for (const it of items) { if (total <= cap) break; total -= it.bytes; await req('data', 'readwrite', (st) => st.delete(it.k)); await req('index', 'readwrite', (st) => st.delete(it.k)); }
+  }
+  async function stats() { try { const v = await req('index', 'readonly', (st) => st.getAll()); return { songs: v.length, bytes: v.reduce((a, x) => a + x.bytes, 0) }; } catch (e) { return { songs: 0, bytes: 0 }; } }
+  async function clear() { await req('data', 'readwrite', (st) => st.clear()); await req('index', 'readwrite', (st) => st.clear()); }
+  return { key, save, load, has, stats, clear };
+})();
+
+// ---- pre-analysis: AI stems for imported songs are prepared in the background, one at a time ----
+const StemPrep = (() => {
+  const queue = []; let busy = false;
+  function consider(A) {
+    if (typeof PREF === 'undefined' || !PREF.aiPre || PREF.stemEngine === 'dsp') return;
+    if (!A || A.generated || A.isLoop || A.revOf || A.buffer.duration < 20 || A.buffer.duration > 20 * 60 || A.stems.state !== 'none') return;
+    if (!queue.includes(A)) queue.push(A);
+    setTimeout(pump, 1500);
+  }
+  async function pump() {
+    if (busy || !queue.length) return;
+    if (AI.status === 'none' || AI.status === 'failed' || !(await AI.ready())) { queue.length = 0; return; }
+    const A = queue.shift();
+    if (!S.assets.has(A.id) || A.stems.state !== 'none') { pump(); return; }
+    if (await StemCache.has(A)) { bus.emit('assets'); A.stems.precached = true; pump(); return; }
+    busy = true;
+    try { await separateAsset(A, null, { background: true }); } catch (e) { }
+    busy = false;
+    // free the memory unless the song is in use; the stems stay in the cache for instant reuse
+    if (A.stems.state === 'done' && A.stems.engine === 'ai' && A.stems.background && Deck.asset !== A && !P.tracks.some((t) => t.clips.some((c) => c.asset === A.id && c.stem))) {
+      A.stems = { state: 'none', buffers: null, peaks: null, promise: null, ms: 0, precached: true };
+      bus.emit('assets');
+    }
+    setTimeout(pump, 500);
+  }
+  return { consider, pump, get pending() { return queue.length + (busy ? 1 : 0); } };
+})();
 function separateAssetAI(A, t0, opts) {
   const ver = A.version;
   A.stems.engine = 'ai'; A.stems.live = { regions: [] };
   const h = AI.separate(A, {
-    from: opts.from || 0,
+    from: opts.from || 0, priority: opts.background ? 0 : 2,
     onRegion: (a, b, parts, sr) => { const r = { a, b, parts, sr }; A.stems.live.regions.push(r); bus.emit('stemRegion', { A, r }); },
-    onProgress: (p) => { A.stems.progress = p; A.stems.onProgress && A.stems.onProgress(p); },
+    onProgress: (p) => { A.stems.progress = p; A.stems.onProgress && A.stems.onProgress(p); const now = performance.now(); if (!A.stems._tick || now - A.stems._tick > 2000) { A.stems._tick = now; bus.emit('assets'); } },
   });
   A.stems.ai = h;
   A.stems.promise = h.promise.then(({ stems, ms }) => {
@@ -272,8 +358,9 @@ function separateAssetAI(A, t0, opts) {
     A.stems.buffers = bufs;
     A.stems.peaks = {}; for (const k in bufs) A.stems.peaks[k] = computePeaks(bufs[k]);
     A.stems.state = 'done'; A.stems.ms = performance.now() - t0; A.stems.aiMs = ms; A.stems.promise = null; A.stems.ai = null;
-    bus.emit('assets'); bus.emit('stemsDone', A);
     A.stems.live = null;
+    StemCache.save(A);
+    bus.emit('assets'); if (!A.stems.background) bus.emit('stemsDone', A);
     return A.stems;
   }).catch((e) => {
     A.stems.ai = null; A.stems.live = null;

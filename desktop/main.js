@@ -1,23 +1,25 @@
 // Rush Music Studio — desktop shell (Electron). Everything runs locally; no network access is used.
-// The app is served from a private rush:// scheme with cross-origin isolation, which unlocks
-// multi-threaded WebAssembly and WebGPU for the AI stem separator.
-const { app, BrowserWindow, Menu, session, protocol, net, ipcMain, MessageChannelMain } = require('electron');
+// The app is served from a private rush:// scheme (secure context, cross-origin isolated), so the
+// AI stem separator can use the graphics card (WebGPU) and every CPU core (WebAssembly workers).
+const { app, BrowserWindow, Menu, session, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
-const { fork } = require('child_process');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'rush', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, codeCache: true } }]);
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+// WebGPU is on by default on Windows and macOS; on Linux it is still behind this switch
+// (if no hardware adapter shows up there, the separator simply uses every CPU core)
+if (process.platform === 'linux') app.commandLine.appendSwitch('enable-unsafe-webgpu');
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.onnx': 'application/octet-stream' };
-// app files live inside the package; the AI runtime and model ship as extra resources
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.rsm': 'application/octet-stream' };
+// app files live inside the package; the AI model ships as an extra resource
 const appDir = path.join(__dirname, 'app');
 const aiDir = app.isPackaged ? path.join(process.resourcesPath, 'ai') : path.join(__dirname, 'ai');
 
 function resolve(urlPath) {
   const p = decodeURIComponent(urlPath).replace(/^\/+/, '');
-  const [root, rel] = /^(models|ort)\//.test(p) ? [aiDir, p] : [appDir, p || 'RushMusicStudio.html'];
+  const [root, rel] = /^models\//.test(p) ? [aiDir, p] : [appDir, p || 'RushMusicStudio.html'];
   const file = path.normalize(path.join(root, rel));
   return file.startsWith(root + path.sep) ? file : null;     // no escaping the app folders
 }
@@ -26,7 +28,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 900, minHeight: 600,
     backgroundColor: '#0d0f14', title: 'Rush Music Studio', autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false, preload: path.join(__dirname, 'preload.js') },
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   Menu.setApplicationMenu(null);
   win.loadURL('rush://app/RushMusicStudio.html');
@@ -45,7 +47,7 @@ function createWindow() {
             const A = addAsset('selftest', makeBuffer([L, R], sr), { bpm: 120, beats: 40 });
             const t0 = performance.now(); await separateAsset(A); sep = { engine: A.stems.engine, seconds: +((performance.now() - t0) / 1000).toFixed(1), realtime: +(20 / ((performance.now() - t0) / 1000)).toFixed(2) };
           }
-          return JSON.stringify({ ok, readyMs, desc: AI.describe(), nativeErr: AI.nativeErr, desktop: !!window.rushDesktop, isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
+          return JSON.stringify({ ok, readyMs, desc: AI.describe(), ep: AI.ep, isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
         })()`);
         console.log('RUSH_SELFTEST ' + r);
       } catch (e) { console.log('RUSH_SELFTEST error ' + e.message); }
@@ -71,31 +73,6 @@ app.whenReady().then(() => {
   const allowed = ['media', 'audioCapture', 'fileSystem'];
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.includes(perm)));
   session.defaultSession.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^https?:/i.test(d.url) }));
-  // native AI separator in its own Node process (the Electron binary run as Node);
-  // each page gets a private message channel to it, bridged here
-  let aiProc = null, chanSeq = 0;
-  const chans = new Map();
-  ipcMain.on('rush-ai-port', (e) => {
-    if (!fs.existsSync(path.join(aiDir, 'models', 'manifest.json'))) return;
-    if (!aiProc) {
-      aiProc = fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, serialization: 'advanced', stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-      for (const st of [aiProc.stdout, aiProc.stderr]) st.on('data', (d) => console.log('RUSH_AI_LOG ' + String(d).trim().slice(0, 500)));
-      aiProc.on('message', ({ ch, m }) => { const p = chans.get(ch); if (process.env.RUSH_SELFTEST && m.type !== 'progress') console.log('RUSH_AI_LOG to page: ' + m.type + (p ? '' : ' (no channel)')); if (p) p.postMessage(m); });
-      aiProc.on('exit', (code) => { console.log('RUSH_AI_LOG separator exited ' + code); aiProc = null; for (const p of chans.values()) p.postMessage({ type: 'failed', error: 'native separator stopped' }); chans.clear(); });
-    }
-    const { port1, port2 } = new MessageChannelMain(), ch = ++chanSeq;
-    chans.set(ch, port1);
-    port1.on('message', (ev) => {
-      const m = ev.data;
-      if (process.env.RUSH_SELFTEST && m && m.type === 'separate') console.log('RUSH_AI_LOG main got separate: L ' + Object.prototype.toString.call(m.L) + ' len ' + (m.L && m.L.length));
-      if (aiProc) aiProc.send({ ch, m }, (err) => { if (err) console.log('RUSH_AI_LOG send failed: ' + err.message); else if (process.env.RUSH_SELFTEST && m && m.type === 'separate') console.log('RUSH_AI_LOG main forwarded separate'); });
-    });
-    port1.on('close', () => chans.delete(ch));
-    port1.start();
-    e.sender.postMessage('rush-ai-port', null, [port2]);
-  });
-  app.on('before-quit', () => { if (aiProc) aiProc.kill(); });
-  process.on('exit', () => { if (aiProc) aiProc.kill(); });
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());

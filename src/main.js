@@ -38,8 +38,8 @@ function renderPool() {
       if (A.key) tags.push(el('span', { class: 'tag', title: A.key.name }, A.key.camelot + ' · ' + A.key.short));
       if (A.isLoop) tags.push(el('span', { class: 'tag' }, Math.round(A.beats) + ' beats'));
     }
-    if (A.stems.state === 'done') tags.push(el('span', { class: 'tag stems' }, 'stems'));
-    if (A.stems.state === 'running') tags.push(el('span', { class: 'tag' }, 'separating…'));
+    if (A.stems.state === 'done' || A.stems.precached) tags.push(el('span', { class: 'tag stems', title: A.stems.engine === 'ai' || A.stems.precached ? 'AI stems are ready (instant on the Stems deck)' : 'Fast stems' }, A.stems.engine === 'ai' || A.stems.precached ? 'AI stems' : 'stems'));
+    if (A.stems.state === 'running') tags.push(el('span', { class: 'tag', title: A.stems.background ? 'Preparing AI stems in the background' : '' }, (A.stems.background ? 'AI prep ' : 'separating ') + Math.round((A.stems.progress || 0) * 100) + '%'));
     const add = el('button', { class: 'icon-btn', title: 'Add to mix: new track after the last song, crossfaded', 'aria-label': 'Add to mix' }, icon('plus'));
     add.addEventListener('click', (e) => { e.stopPropagation(); setView('arrange'); Arrange.addToMix(A); });
     const ed = el('button', { class: 'icon-btn', title: 'Open in Editor', 'aria-label': 'Open in Editor' }, icon('edit'));

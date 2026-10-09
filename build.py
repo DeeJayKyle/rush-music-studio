@@ -8,9 +8,11 @@ for name, code in [('worker', worker), ('app', app)]:
     assert '</script' not in code.lower(), name
 app = '"use strict";\n' + app
 head_meta = '<meta name="description" content="Rush Music Studio: offline, open-source multitrack studio, audio editor and real-time stem separator.">'
-aiw = r('aiworker.js')
+import base64, json
+aiw = r('fft.js') + '\n' + r('stemnet.js') + '\n' + r('aiworker.js')
 assert '</script' not in aiw.lower()
-aitag = f'<script id="rush-ai-src" type="text/plain">\n{aiw}\n</script>\n'
+kern = json.dumps({k: base64.b64encode(open(os.path.join(src, 'kernels', f), 'rb').read()).decode() for k, f in (('simd', 'kernels.wasm'), ('fma', 'kernels_fma.wasm'))})
+aitag = f'<script id="rush-ai-src" type="text/plain">\n{aiw}\n</script>\n<script id="rush-ai-kern" type="application/json">{kern}</script>\n'
 mp3 = r('vendor/lame.min.js') + '\n' + r('mp3worker.js')
 assert '</script' not in mp3.lower()
 mp3tag = f'<script id="rush-mp3-src" type="text/plain">\n/* LAME MP3 encoder (lamejs, LGPL-3.0, unmodified): https://github.com/zhuker/lamejs  ·  lame.sourceforge.net */\n{mp3}\n</script>\n'

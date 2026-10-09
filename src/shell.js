@@ -7,7 +7,7 @@ const PREF = (() => {
     latency: 'interactive', sampleRate: 0, autosave: true,
     autoBeatmap: true, beatmapMin: 90, autoXfade: true, quickFade: true, ripple: false, snapOn: true, countIn: 1,
     previewAuto: true, previewVol: -6, previewSync: false,
-    stemEngine: 'auto', aiOverlap: 0.25, aiDevice: 'auto',
+    stemEngine: 'auto', aiOverlap: 0.25, aiDevice: 'auto', aiQuality: 'best', aiPre: true, aiThreads: 0,
     np: { bpm: 105, bpb: 4, artist: '', engineer: '', copyright: '', genre: '', remember: false },
     exp: { format: 'wav24', sr: 0, master: 'streaming', target: -14, ceiling: -1, dither: true, tail: true, dest: 'file' },
     showOverview: true, showMeters: true, showLibrary: true,
@@ -263,7 +263,7 @@ async function exportMix(toMedia) {
 
 // ---- preferences ---------------------------------------------------------------------------
 async function showPrefs() {
-  const r = await showDialog({ title: 'Preferences', wide: true, ok: 'Save', fields: [
+  const r = await showDialog({ title: 'Preferences', wide: true, ok: 'Save', extra: [{ label: 'AI stem model…', action: () => aiModelDialog() }], fields: [
     { type: 'header', label: 'Audio' },
     { id: 'latency', label: 'Playback latency', type: 'select', value: PREF.latency, options: [{ value: 'interactive', label: 'Lowest (live play and recording)' }, { value: 'balanced', label: 'Balanced' }, { value: 'playback', label: 'Safest (big projects, no dropouts)' }] },
     { id: 'sampleRate', label: 'Engine sample rate', type: 'select', value: String(PREF.sampleRate), options: SR_OPTS },
@@ -278,20 +278,43 @@ async function showPrefs() {
     { id: 'previewSync', label: 'Preview in project tempo (when the file’s tempo is known)', type: 'check', value: PREF.previewSync },
     { type: 'header', label: 'Stem separation' },
     { id: 'stemEngine', label: 'Separator', type: 'select', value: PREF.stemEngine, options: [{ value: 'auto', label: 'AI (HTDemucs) when available' }, { value: 'dsp', label: 'Fast (signal processing only)' }], hint: AI.describe() },
-    { id: 'aiOverlap', label: 'AI quality', type: 'select', value: String(PREF.aiOverlap), options: [{ value: '0.25', label: 'Best (25% window overlap)' }, { value: '0.5', label: 'Maximum (50% overlap, 1.5× slower)' }, { value: '0.1', label: 'Faster (10% overlap)' }] },
-    { id: 'aiDevice', label: 'AI runs on', type: 'select', value: PREF.aiDevice, options: [{ value: 'auto', label: 'Graphics card when available, else CPU' }, { value: 'cpu', label: 'CPU only' }, { value: 'wasm', label: 'Built-in WebAssembly engine (compatibility)' }], hint: 'Takes effect the next time Rush starts.' },
+    { id: 'aiQuality', label: 'AI quality', type: 'select', value: PREF.aiQuality, options: [{ value: 'best', label: 'Studio (one pass)' }, { value: 'ultra', label: 'Ultra (two shifted passes averaged, 2× time)' }] },
+    { id: 'aiOverlap', label: 'Window overlap', type: 'select', value: String(PREF.aiOverlap), options: [{ value: '0.25', label: '25% (reference setting)' }, { value: '0.5', label: '50% (smoothest, 1.5× time)' }, { value: '0.1', label: '10% (faster)' }] },
+    { id: 'aiDevice', label: 'AI runs on', type: 'select', value: PREF.aiDevice === 'wasm' ? 'cpu' : PREF.aiDevice, options: [{ value: 'auto', label: 'Graphics card when available, else all CPU cores' }, { value: 'cpu', label: 'CPU only' }] },
+    { id: 'aiPre', label: 'Prepare AI stems in the background for songs you import (pre-analysis)', type: 'check', value: PREF.aiPre },
     { type: 'header', label: 'Songs and beatmapping' },
     { id: 'autoBeatmap', label: 'Open the Beatmapper for long songs added to the arrangement', type: 'check', value: PREF.autoBeatmap },
     { id: 'beatmapMin', label: 'A song is “long” from (seconds)', type: 'number', value: PREF.beatmapMin, min: 10, max: 900, step: 5, show: (v) => v.autoBeatmap },
     { id: 'autosave', label: 'Autosave for crash recovery', type: 'check', value: PREF.autosave },
   ] });
   if (!r) return;
-  const audioChanged = r.latency !== PREF.latency || +r.sampleRate !== PREF.sampleRate;
-  Object.assign(PREF, { latency: r.latency, sampleRate: +r.sampleRate, countIn: +r.countIn, previewVol: r.previewVol, snapOn: r.snapOn, autoXfade: r.autoXfade, ripple: r.ripple, quickFade: r.quickFade, previewAuto: r.previewAuto, previewSync: r.previewSync, stemEngine: r.stemEngine, aiOverlap: +r.aiOverlap, aiDevice: r.aiDevice, autoBeatmap: r.autoBeatmap, beatmapMin: clamp(+r.beatmapMin || 90, 10, 900), autosave: r.autosave });
+  const audioChanged = r.latency !== PREF.latency || +r.sampleRate !== PREF.sampleRate, prevDevice = PREF.aiDevice;
+  Object.assign(PREF, { latency: r.latency, sampleRate: +r.sampleRate, countIn: +r.countIn, previewVol: r.previewVol, snapOn: r.snapOn, autoXfade: r.autoXfade, ripple: r.ripple, quickFade: r.quickFade, previewAuto: r.previewAuto, previewSync: r.previewSync, stemEngine: r.stemEngine, aiOverlap: +r.aiOverlap, aiQuality: r.aiQuality, aiPre: r.aiPre, aiDevice: r.aiDevice, autoBeatmap: r.autoBeatmap, beatmapMin: clamp(+r.beatmapMin || 90, 10, 900), autosave: r.autosave });
   Autosave.enabled = PREF.autosave;
+  const devChanged = r.aiDevice !== prevDevice;
   savePrefs();
+  if (devChanged && AI.status !== 'none') AI.restart();
   if (audioChanged) { await Engine.recreate(); toast('Audio engine restarted at ' + (Engine.ctx.sampleRate / 1000).toFixed(1) + ' kHz', 'ok'); }
   Arrange.draw();
+}
+// ---- AI model: status, install from file, remove ----
+async function aiModelDialog() {
+  await AI.probe();
+  const src = AI.source, have = AI.status !== 'none' && (src || AI.status === 'ready');
+  const pick = () => new Promise((res) => { const i = el('input', { type: 'file', accept: '.rsm' }); i.addEventListener('change', () => res(i.files[0] || null)); i.click(); });
+  const r = await showDialog({
+    title: 'AI stem model', ok: have ? 'Close' : 'Install from file…', cancel: have ? null : 'Close',
+    desc: (have ? (src === 'app' ? 'The AI model ships with this app. ' : 'The AI model is installed in this browser. ') + AI.describe() + '.'
+      : 'Studio-quality stems use the HTDemucs network (by Meta, MIT licence), run fully offline by Rush’s own engine on your graphics card or CPU. The desktop app includes it. In a browser, install it once from the file “rush-htdemucs.rsm” (84 MB) attached to every release at ' + AI.MODEL_URL + '.'),
+    extra: src === 'installed' ? [{ label: 'Remove model', action: async () => { await AI.uninstall(); toast('AI model removed from this browser'); } }] : [],
+  });
+  if (r && !have) {
+    const f = await pick(); if (!f) return;
+    status('Installing the AI model…');
+    try { const ok = await AI.install(f); toast(ok ? 'AI stems ready: ' + AI.describe() : 'Installed, but the AI separator could not start', ok ? 'ok' : 'err'); }
+    catch (e) { toast(e.message, 'err'); }
+    status('Ready');
+  }
 }
 function toggleSnap() { PREF.snapOn = !PREF.snapOn; savePrefs(); status(PREF.snapOn ? 'Snapping on' : 'Snapping off (F8)'); $('#snapSel').classList.toggle('off', !PREF.snapOn); }
 function toggleBypass() {
@@ -347,6 +370,7 @@ const SHELL_MENUS = {
     { label: 'Beatmapper for long songs', checked: PREF.autoBeatmap, action: () => { PREF.autoBeatmap = !PREF.autoBeatmap; savePrefs(); } },
     { label: 'Auto-preview in Explorer', checked: PREF.previewAuto, action: () => { PREF.previewAuto = !PREF.previewAuto; savePrefs(); } },
     '-',
+    { label: 'AI stem model…', action: aiModelDialog },
     { label: 'Preferences…', key: 'Ctrl+,', action: showPrefs },
   ],
 };

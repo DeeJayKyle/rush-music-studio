@@ -25,29 +25,23 @@ jobs:
         run: python build.py
       - name: Copy app into the desktop shell
         shell: bash
-        run: mkdir -p desktop/app && cp dist/RushMusicStudio.html src/aiworker.js desktop/app/
-      - name: Fetch the AI stem separator (HTDemucs + ONNX Runtime)
+        run: mkdir -p desktop/app && cp dist/RushMusicStudio.html desktop/app/
+      - name: Prepare the AI stem model (official HTDemucs v4 weights)
         shell: bash
         run: bash desktop/fetch-ai.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Check AI stem quality
-        if: matrix.os == 'ubuntu-latest' && hashFiles('desktop/ai/models/manifest.json') != ''
-        continue-on-error: true
+      - name: Check the neural engine against the reference implementation
+        if: matrix.os == 'ubuntu-latest' && hashFiles('desktop/ai/models/rush-htdemucs.rsm') != ''
         shell: bash
         run: |
-          set +e
-          note() { echo "::warning title=$1::$(tail -c 900 "$2" | tr '\n' ' ' | sed 's/%/%25/g')"; }
-          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ortn" onnxruntime-node > npm.log 2>&1 || note "npm onnxruntime-node" npm.log
-          node desktop/ci-ai-test.js "$RUNNER_TEMP/ortn/node_modules/onnxruntime-node" > node.log 2>&1; cat node.log; grep -q '::notice' node.log || note "node AI test" node.log
-          (pip install -q playwright && python -m playwright install --with-deps chromium) > pw.log 2>&1 || note "playwright install" pw.log
-          python desktop/ci-browser-test.py > br.log 2>&1; cat br.log; grep -q 'AI variant' br.log || note "browser AI test" br.log
-          exit 0
-      - name: Remove test files from the app folder
-        if: always()
+          python -m pip install -q numpy scipy
+          python tools/stemnet_check.py desktop/ai/models/rush-htdemucs.rsm
+      - name: Keep the model for the release
+        if: matrix.os == 'ubuntu-latest' && hashFiles('desktop/ai/models/rush-htdemucs.rsm') != ''
         shell: bash
-        run: rm -rf desktop/app/ci desktop/ai/models/htdemucs32.onnx
+        run: mkdir -p dist && cp desktop/ai/models/rush-htdemucs.rsm dist/
       - name: Install build tools
         working-directory: desktop
         shell: bash
@@ -74,12 +68,9 @@ jobs:
         shell: bash
         run: |
           sudo apt-get install -y -qq xvfb > /dev/null 2>&1
-          ELECTRON_RUN_AS_NODE=1 timeout 240 desktop/release/linux-unpacked/rush-music-studio desktop/ci-native-probe.js "$PWD/desktop/release/linux-unpacked/resources" > probe.log 2>&1 || true
-          echo "::notice title=Native probe::$(grep PROBE probe.log | tr '\n' ' ' | tail -c 900) $(tail -c 300 probe.log | tr '\n' ' ')"
           RUSH_SELFTEST=1 timeout 400 xvfb-run -a desktop/release/linux-unpacked/rush-music-studio --no-sandbox > st.log 2>&1 || true
           out=$(grep RUSH_SELFTEST st.log | tail -1 || true); logs=$(grep RUSH_AI_LOG st.log | grep -v GetPciBusId | tail -c 900 | tr '\n' ' ' || true)
           echo "::notice title=Packaged app self-test::${out:-no output}"
-          echo "::warning title=Native AI log::${logs:-none}"
           echo "::warning title=App log tail::$(grep -v GetPciBusId st.log | tail -c 700 | tr '\n' ' ')"
           true
       - name: Report build error
@@ -105,7 +96,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rush-html
-          path: dist/RushMusicStudio.html
+          path: |
+            dist/RushMusicStudio.html
+            dist/rush-htdemucs.rsm
 
   release:
     # Publishes (or updates) the release named after the version in desktop/package.json
@@ -132,5 +125,5 @@ jobs:
             - **Windows:** `RushMusicStudio-*-win-x64.exe` (installer) or `RushMusicStudio-*-portable.exe` (no install)
             - **Mac:** `.dmg` (unsigned: right-click the app → Open the first time)
             - **Linux:** `.AppImage` or `.deb`
-            - **Any computer:** `RushMusicStudio.html` — open it in Chrome or Edge, fully offline (fast stem separator only; the AI separator ships with the desktop app).
+            - **Any computer:** `RushMusicStudio.html` — open it in Chrome or Edge, fully offline. For AI stems in the browser, also download `rush-htdemucs.rsm` and install it once from Options › AI stem model (the desktop apps already include it).
           files: out/*
