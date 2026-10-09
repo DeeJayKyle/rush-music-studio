@@ -37,11 +37,14 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ortn" onnxruntime-node > /dev/null 2>&1
-          node desktop/ci-ai-test.js "$RUNNER_TEMP/ortn/node_modules/onnxruntime-node"
-          pip install -q playwright && python -m playwright install --with-deps chromium > /dev/null 2>&1
-          curl -fsSL -o desktop/ai/models/htdemucs32.onnx https://huggingface.co/adowu/htdemucs-onnx/resolve/main/htdemucs.onnx || true
-          python desktop/ci-browser-test.py
+          set +e
+          note() { echo "::warning title=$1::$(tail -c 900 "$2" | tr '\n' ' ' | sed 's/%/%25/g')"; }
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ortn" onnxruntime-node > npm.log 2>&1 || note "npm onnxruntime-node" npm.log
+          node desktop/ci-ai-test.js "$RUNNER_TEMP/ortn/node_modules/onnxruntime-node" > node.log 2>&1; cat node.log; grep -q '::notice' node.log || note "node AI test" node.log
+          curl -fsSL -o desktop/ai/models/htdemucs32.onnx https://huggingface.co/adowu/htdemucs-onnx/resolve/main/htdemucs.onnx
+          (pip install -q playwright && python -m playwright install --with-deps chromium) > pw.log 2>&1 || note "playwright install" pw.log
+          python desktop/ci-browser-test.py > br.log 2>&1; cat br.log; grep -q 'AI variant' br.log || note "browser AI test" br.log
+          exit 0
       - name: Remove test files from the app folder
         if: always()
         shell: bash
