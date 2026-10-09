@@ -66,6 +66,15 @@ jobs:
         run: |
           set -o pipefail
           npm run dist 2>&1 | tee build.log
+      - name: Self-test the packaged app (AI separator)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sudo apt-get install -y -qq xvfb > /dev/null 2>&1
+          out=$(RUSH_SELFTEST=1 timeout 300 xvfb-run -a desktop/release/linux-unpacked/rush-music-studio --no-sandbox 2>&1 | grep RUSH_SELFTEST | tail -1)
+          echo "$out"
+          echo "::notice title=Packaged app self-test::${out:-no output}"
       - name: Report build error
         if: failure()
         shell: bash

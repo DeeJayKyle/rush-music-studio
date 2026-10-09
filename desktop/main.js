@@ -29,6 +29,20 @@ function createWindow() {
   });
   Menu.setApplicationMenu(null);
   win.loadURL('rush://app/RushMusicStudio.html');
+  // CI self-test: report whether the packaged app can start the AI separator, then quit
+  if (process.env.RUSH_SELFTEST) {
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        const r = await win.webContents.executeJavaScript(`(async () => {
+          for (let i = 0; i < 120 && !/^Ready/.test((document.querySelector('#statusMsg') || {}).textContent || ''); i++) await new Promise((r) => setTimeout(r, 500));
+          const ok = await AI.ready();
+          return JSON.stringify({ ok, desc: AI.describe(), isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs) });
+        })()`);
+        console.log('RUSH_SELFTEST ' + r);
+      } catch (e) { console.log('RUSH_SELFTEST error ' + e.message); }
+      app.exit(0);
+    });
+  }
 }
 
 app.whenReady().then(() => {
