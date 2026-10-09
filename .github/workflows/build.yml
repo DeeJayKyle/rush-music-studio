@@ -25,7 +25,7 @@ jobs:
         run: python build.py
       - name: Copy app into the desktop shell
         shell: bash
-        run: mkdir -p desktop/app && cp dist/RushMusicStudio.html desktop/app/
+        run: mkdir -p desktop/app && cp dist/RushMusicStudio.html src/aiworker.js desktop/app/
       - name: Fetch the AI stem separator (HTDemucs + ONNX Runtime)
         shell: bash
         run: bash desktop/fetch-ai.sh
@@ -51,6 +51,8 @@ jobs:
       - name: Install build tools
         working-directory: desktop
         shell: bash
+        env:
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
         run: |
           for i in 1 2 3; do
             npm install --no-audit --no-fund 2>&1 | tee install.log && break

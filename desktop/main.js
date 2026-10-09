@@ -1,7 +1,7 @@
 // Rush Music Studio — desktop shell (Electron). Everything runs locally; no network access is used.
 // The app is served from a private rush:// scheme with cross-origin isolation, which unlocks
 // multi-threaded WebAssembly and WebGPU for the AI stem separator.
-const { app, BrowserWindow, Menu, session, protocol, net } = require('electron');
+const { app, BrowserWindow, Menu, session, protocol, net, ipcMain, utilityProcess, MessageChannelMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -25,7 +25,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 900, minHeight: 600,
     backgroundColor: '#0d0f14', title: 'Rush Music Studio', autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false, preload: path.join(__dirname, 'preload.js') },
   });
   Menu.setApplicationMenu(null);
   win.loadURL('rush://app/RushMusicStudio.html');
@@ -36,7 +36,14 @@ function createWindow() {
         const r = await win.webContents.executeJavaScript(`(async () => {
           for (let i = 0; i < 120 && !/^Ready/.test((document.querySelector('#statusMsg') || {}).textContent || ''); i++) await new Promise((r) => setTimeout(r, 500));
           const ok = await AI.ready();
-          return JSON.stringify({ ok, desc: AI.describe(), isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs) });
+          let sep = null;
+          if (ok) {
+            const sr = 44100, n = sr * 20, L = new Float32Array(n), R = new Float32Array(n);
+            for (let i = 0; i < n; i++) { const t = i / sr; L[i] = 0.3 * Math.sin(2 * Math.PI * 110 * t) + (Math.random() - 0.5) * 0.2 * Math.exp(-((t * 2) % 1) * 20); R[i] = L[i]; }
+            const A = addAsset('selftest', makeBuffer([L, R], sr), { bpm: 120, beats: 40 });
+            const t0 = performance.now(); await separateAsset(A); sep = { engine: A.stems.engine, seconds: +((performance.now() - t0) / 1000).toFixed(1), realtime: +(20 / ((performance.now() - t0) / 1000)).toFixed(2) };
+          }
+          return JSON.stringify({ ok, desc: AI.describe(), isolated: self.crossOriginIsolated, chunkMs: Math.round(AI.chunkMs), sep });
         })()`);
         console.log('RUSH_SELFTEST ' + r);
       } catch (e) { console.log('RUSH_SELFTEST error ' + e.message); }
@@ -62,6 +69,18 @@ app.whenReady().then(() => {
   const allowed = ['media', 'audioCapture', 'fileSystem'];
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.includes(perm)));
   session.defaultSession.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^https?:/i.test(d.url) }));
+  // native AI separator in its own process; each page gets a private message channel to it
+  let aiProc = null;
+  ipcMain.on('rush-ai-port', (e) => {
+    if (!fs.existsSync(path.join(aiDir, 'models', 'manifest.json'))) return;
+    if (!aiProc) {
+      aiProc = utilityProcess.fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { serviceName: 'Rush AI stem separator' });
+      aiProc.on('exit', () => { aiProc = null; });
+    }
+    const { port1, port2 } = new MessageChannelMain();
+    aiProc.postMessage({ type: 'port' }, [port1]);
+    e.sender.postMessage('rush-ai-port', null, [port2]);
+  });
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());

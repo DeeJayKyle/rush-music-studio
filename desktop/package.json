@@ -26,7 +26,10 @@
     },
     "files": [
       "main.js",
-      "app/**/*"
+      "preload.js",
+      "ai-native.js",
+      "app/**/*",
+      "node_modules/**/*"
     ],
     "artifactName": "RushMusicStudio-${version}-${os}-${arch}.${ext}",
     "win": {
@@ -43,6 +46,11 @@
             "x64"
           ]
         }
+      ],
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
+        "!node_modules/onnxruntime-node/bin/napi-v*/linux/**",
+        "!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**"
       ]
     },
     "portable": {
@@ -64,7 +72,11 @@
         }
       ],
       "category": "public.app-category.music",
-      "identity": null
+      "identity": null,
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
+        "!node_modules/onnxruntime-node/bin/napi-v*/linux/**"
+      ]
     },
     "linux": {
       "target": [
@@ -82,7 +94,12 @@
         }
       ],
       "category": "Audio",
-      "maintainer": "Rush Music Studio contributors"
+      "maintainer": "Rush Music Studio contributors",
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v*/win32/**",
+        "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
+        "!node_modules/onnxruntime-node/bin/napi-v*/linux/arm64/**"
+      ]
     },
     "extraResources": [
       {
@@ -92,10 +109,16 @@
           "**/*"
         ]
       }
+    ],
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**"
     ]
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/DeeJayKyle/rush-music-studio.git"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.22.0"
   }
 }

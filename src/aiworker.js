@@ -404,7 +404,50 @@ function htdemucsPostForward(spectrogramOutput, waveformOutput, spectrogramStats
     return sources;
 }
 
-  return { htdemucsPreForward, htdemucsPostForward, SEGMENT_LENGTH, SPECTROGRAM_SHAPE, WAVEFORM_SHAPE };
+// Rush: both channels of a stem in one complex inverse FFT (two real signals share a transform),
+// which halves the cost of the inverse STFT. Same result as computeIstftChannel for each channel.
+function computeIstftPair(rA, iA, rB, iB, frameCount) {
+    const half = FFT_SIZE / 2, rawLength = (frameCount - 1) * STFT_HOP + FFT_SIZE;
+    const outA = new Float32Array(rawLength), outB = new Float32Array(rawLength), windowTotals = new Float32Array(rawLength);
+    const scale = Math.sqrt(FFT_SIZE) / FFT_SIZE;
+    for (let frame = 0; frame < frameCount; frame++) {
+        for (let k = 0; k <= half; k++) {
+            const j = k * frameCount + frame, ar = rA[j], ai = iA[j], br = rB[j], bi = iB[j];
+            // Z = A + iB, conjugated for the inverse transform
+            FFT_REAL[k] = ar - bi; FFT_IMAGINARY[k] = -(ai + br);
+            if (k > 0 && k < half) { FFT_REAL[FFT_SIZE - k] = ar + bi; FFT_IMAGINARY[FFT_SIZE - k] = -(br - ai); }
+        }
+        fftInPlace(FFT_REAL, FFT_IMAGINARY);
+        const base = frame * STFT_HOP;
+        for (let i = 0; i < FFT_SIZE; i++) {
+            const w = HANN_WINDOW[i];
+            outA[base + i] += FFT_REAL[i] * w * scale;
+            outB[base + i] -= FFT_IMAGINARY[i] * w * scale;
+            windowTotals[base + i] += w * w;
+        }
+    }
+    for (let i = 0; i < rawLength; i++) { const t = windowTotals[i]; if (t > 1e-8) { outA[i] /= t; outB[i] /= t; } }
+    return [outA.subarray(CENTER_PAD, rawLength - CENTER_PAD), outB.subarray(CENTER_PAD, rawLength - CENTER_PAD)];
+}
+function htdemucsPostForwardFast(spectrogramOutput, waveformOutput, spectrogramStats, waveformStats) {
+    const channelSize = FREQUENCY_BINS * TIME_FRAMES, paddedFrames = TIME_FRAMES + 4, n = (FREQUENCY_BINS + 1) * paddedFrames;
+    const bufs = [0, 1, 2, 3].map(() => new Float32Array(n));
+    const sources = new Float32Array(STEM_NAMES.length * 2 * SEGMENT_LENGTH);
+    const sd = spectrogramStats.standardDeviation, mu = spectrogramStats.mean;
+    for (let stem = 0; stem < STEM_NAMES.length; stem++) {
+        for (let q = 0; q < 4; q++) {                      // real_L, imag_L, real_R, imag_R
+            const b = bufs[q], off = (stem * 4 + q) * channelSize; b.fill(0);
+            for (let bin = 0; bin < FREQUENCY_BINS; bin++) { const so = off + bin * TIME_FRAMES, to = bin * paddedFrames + 2; for (let f = 0; f < TIME_FRAMES; f++) b[to + f] = spectrogramOutput[so + f] * sd + mu; }
+        }
+        const [wl, wr] = computeIstftPair(bufs[0], bufs[1], bufs[2], bufs[3], paddedFrames);
+        for (let channel = 0; channel < 2; channel++) {
+            const w = channel ? wr : wl, offset = (stem * 2 + channel) * SEGMENT_LENGTH;
+            for (let i = 0; i < SEGMENT_LENGTH; i++) sources[offset + i] = w[DEMUCS_PAD + i] + (waveformOutput[offset + i] * waveformStats.standardDeviation + waveformStats.mean);
+        }
+    }
+    return sources;
+}
+  return { htdemucsPreForward, htdemucsPostForward: htdemucsPostForwardFast, htdemucsPostForwardRef: htdemucsPostForward, SEGMENT_LENGTH, SPECTROGRAM_SHAPE, WAVEFORM_SHAPE };
 })();
 
 // ---- worker plumbing (skipped when this file is loaded for tests) ----

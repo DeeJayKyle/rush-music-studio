@@ -279,7 +279,7 @@ async function showPrefs() {
     { type: 'header', label: 'Stem separation' },
     { id: 'stemEngine', label: 'Separator', type: 'select', value: PREF.stemEngine, options: [{ value: 'auto', label: 'AI (HTDemucs) when available' }, { value: 'dsp', label: 'Fast (signal processing only)' }], hint: AI.describe() },
     { id: 'aiOverlap', label: 'AI quality', type: 'select', value: String(PREF.aiOverlap), options: [{ value: '0.25', label: 'Best (25% window overlap)' }, { value: '0.5', label: 'Maximum (50% overlap, 1.5× slower)' }, { value: '0.1', label: 'Faster (10% overlap)' }] },
-    { id: 'aiDevice', label: 'AI runs on', type: 'select', value: PREF.aiDevice, options: [{ value: 'auto', label: 'Graphics card when available, else CPU' }, { value: 'cpu', label: 'CPU only' }], hint: 'Takes effect the next time Rush starts.' },
+    { id: 'aiDevice', label: 'AI runs on', type: 'select', value: PREF.aiDevice, options: [{ value: 'auto', label: 'Graphics card when available, else CPU' }, { value: 'cpu', label: 'CPU only' }, { value: 'wasm', label: 'Built-in WebAssembly engine (compatibility)' }], hint: 'Takes effect the next time Rush starts.' },
     { type: 'header', label: 'Songs and beatmapping' },
     { id: 'autoBeatmap', label: 'Open the Beatmapper for long songs added to the arrangement', type: 'check', value: PREF.autoBeatmap },
     { id: 'beatmapMin', label: 'A song is “long” from (seconds)', type: 'number', value: PREF.beatmapMin, min: 10, max: 900, step: 5, show: (v) => v.autoBeatmap },

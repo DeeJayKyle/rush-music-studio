@@ -24,9 +24,24 @@ const AI = (() => {
     st.readyP = (async () => {
       if (!(await probe())) return false;
       st.status = 'loading'; bus.emit('ai');
+      // desktop app: native separator process first (GPU via DirectML / all CPU cores), then WebAssembly
+      if (window.rushDesktop && window.rushDesktop.native && (typeof PREF === 'undefined' || PREF.aiDevice !== 'wasm')) {
+        const port = await new Promise((res) => {
+          const on = (e) => { if (e.data && e.data.rushAIPort && e.ports[0]) { window.removeEventListener('message', on); res(e.ports[0]); } };
+          window.addEventListener('message', on);
+          window.rushDesktop.requestAIPort();
+          setTimeout(() => { window.removeEventListener('message', on); res(null); }, 8000);
+        });
+        if (port && (await start(port, true))) return true;
+      }
       const src = document.getElementById('rush-ai-src').textContent;
-      const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
-      st.worker = w;
+      return start(new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))), false);
+    })();
+    return st.readyP;
+  }
+  async function start(w, native) {
+    {
+      st.worker = w; st.native = native;
       const ok = await new Promise((res) => {
         w.onmessage = (ev) => {
           const m = ev.data;
@@ -40,13 +55,13 @@ const AI = (() => {
         };
         w.onerror = (e) => { st.err = e.message || 'worker error'; res(false); };
         w.postMessage({ type: 'init', base: base(), manifest: st.manifest, cores: navigator.hardwareConcurrency || 4, isolated: self.crossOriginIsolated, prefer: (typeof PREF !== 'undefined' && PREF.aiDevice) || 'auto', runtime: st.manifest.runtime });
+        if (native) setTimeout(() => res(false), 180000);
       });
+      if (!ok) { console.warn('AI stems unavailable' + (native ? ' (native)' : '') + ':', st.err); try { w.terminate ? w.terminate() : w.close(); } catch (e) { } st.worker = null; if (native) return false; }
       st.status = ok ? 'ready' : 'failed';
-      if (!ok) { console.warn('AI stems unavailable:', st.err); try { w.terminate(); } catch (e) { } st.worker = null; }
       bus.emit('ai');
       return ok;
-    })();
-    return st.readyP;
+    }
   }
   // resample a buffer to the model rate (44.1 kHz stereo)
   async function toModelRate(buf, sr) {
@@ -101,7 +116,7 @@ const AI = (() => {
     };
   }
   function describe() {
-    if (st.status === 'ready') return 'AI (HTDemucs) on ' + (st.ep === 'webgpu' ? 'GPU' : st.threads + ' CPU thread' + (st.threads > 1 ? 's' : ''));
+    if (st.status === 'ready') return 'AI (HTDemucs) on ' + (st.ep === 'webgpu' ? 'the GPU (WebGPU)' : st.ep === 'dml' ? 'the GPU (DirectML)' : st.threads + ' CPU thread' + (st.threads > 1 ? 's' : '') + (st.native ? ' (native)' : ''));
     if (st.status === 'loading') return 'Starting the AI separator…';
     if (st.status === 'failed') return 'AI separator could not start (' + st.err + '): using the fast separator';
     return 'Fast separator (the AI model ships with the desktop app)';
