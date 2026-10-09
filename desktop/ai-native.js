@@ -2,6 +2,8 @@
 // using the GPU through DirectML on Windows and every CPU core elsewhere. Speaks the same
 // message protocol as the in-page WebAssembly worker, so the app treats both the same.
 const fs = require('fs'), path = require('path'), os = require('os');
+console.log = (...a) => { try { fs.writeSync(1, a.join(' ') + '\n'); } catch (e) { } };
+console.error = (...a) => { try { fs.writeSync(2, a.join(' ') + '\n'); } catch (e) { } };
 const [appDir, aiDir] = process.argv.slice(2);
 const core = new Function(fs.readFileSync(path.join(appDir, 'aiworker.js'), 'utf8') + '\nreturn { separateCore, HTD };')();
 let ort = null, session = null, cfg = null, ep = '', threads = 1;
@@ -74,6 +76,7 @@ if (process.parentPort) {            // Electron utility process
 } else {                              // Node child process (ELECTRON_RUN_AS_NODE): channels multiplexed over IPC
   const chans = new Map();
   process.on('message', ({ ch, m }) => {
+    if (m && m.type === 'separate') console.log('child got separate: L ' + Object.prototype.toString.call(m.L) + ' len ' + (m.L && m.L.length));
     let c = chans.get(ch);
     if (!c) { c = { h: null, on: (ev, h) => { c.h = h; }, start() {}, postMessage: (msg) => process.send({ ch, m: msg }) }; chans.set(ch, c); serve(c); }
     c.h && c.h({ data: m });

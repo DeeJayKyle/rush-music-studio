@@ -85,7 +85,11 @@ app.whenReady().then(() => {
     }
     const { port1, port2 } = new MessageChannelMain(), ch = ++chanSeq;
     chans.set(ch, port1);
-    port1.on('message', (ev) => { if (aiProc) aiProc.send({ ch, m: ev.data }); });
+    port1.on('message', (ev) => {
+      const m = ev.data;
+      if (process.env.RUSH_SELFTEST && m && m.type === 'separate') console.log('RUSH_AI_LOG main got separate: L ' + Object.prototype.toString.call(m.L) + ' len ' + (m.L && m.L.length));
+      if (aiProc) aiProc.send({ ch, m }, (err) => { if (err) console.log('RUSH_AI_LOG send failed: ' + err.message); else if (process.env.RUSH_SELFTEST && m && m.type === 'separate') console.log('RUSH_AI_LOG main forwarded separate'); });
+    });
     port1.on('close', () => chans.delete(ch));
     port1.start();
     e.sender.postMessage('rush-ai-port', null, [port2]);
