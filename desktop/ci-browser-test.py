@@ -22,11 +22,12 @@ async def main():
             b = await p.chromium.launch()
             pg = await b.new_page()
             logs = []
-            pg.on('console', lambda m: logs.append(m.text[:300]) if m.type in ('error', 'warning') else None)
+            pg.on('console', lambda m: logs.append(m.type[:1] + ':' + m.text[:400]))
             pg.on('pageerror', lambda e: logs.append('PAGEERROR ' + str(e)[:300]))
             await pg.goto('http://127.0.0.1:8766/RushMusicStudio.html')
             await pg.wait_for_function("document.querySelector('#statusMsg').textContent.startsWith('Ready')", timeout=60000)
-            variants = [('app defaults', {}),
+            variants = [('verbose', {'logLevel': 'verbose', 'debug': True, 'threads': 1}),
+                        ('app defaults', {}),
                         ('no arena', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
                         ('no arena, basic opt', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False, 'graphOptimizationLevel': 'basic'}}),
                         ('1 thread, no arena', {'threads': 1, 'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
@@ -36,7 +37,7 @@ async def main():
             for name, dbg in variants:
                 logs.clear()
                 r = await pg.evaluate(PROBE, dbg)
-                line = f"{name}: {r.get('type')} {r.get('ep','')} threads={r.get('threads','')} chunk={round(r.get('chunkMs') or 0)}ms total={r['totalMs']}ms {r.get('error','')} | logs: {' / '.join(logs)[:500]}"
+                line = f"{name}: {r.get('type')} {r.get('ep','')} threads={r.get('threads','')} chunk={round(r.get('chunkMs') or 0)}ms total={r['totalMs']}ms {r.get('error','')} | logs: {' / '.join(l for l in logs if 'Rush' not in l)[-1800:]}"
                 print(line); print('::notice title=AI variant::' + line)
             await b.close()
     finally:

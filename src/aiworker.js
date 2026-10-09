@@ -73,6 +73,7 @@ if (typeof self !== 'undefined' && typeof importScripts === 'function') {
     ort.env.wasm.wasmPaths = base + 'ort/';
     ort.env.wasm.numThreads = threads;
     ort.env.logLevel = extraOpts.logLevel || 'error';
+    if (extraOpts.debug) ort.env.debug = true;
     const so = Object.assign({ executionProviders: eps, graphOptimizationLevel: 'all' }, extraOpts.session || {});
     return ort.InferenceSession.create(base + 'models/' + (extraOpts.model || model), so);
   }
