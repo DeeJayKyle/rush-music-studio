@@ -26,19 +26,21 @@ async def main():
             pg.on('pageerror', lambda e: logs.append('PAGEERROR ' + str(e)[:300]))
             await pg.goto('http://127.0.0.1:8766/RushMusicStudio.html')
             await pg.wait_for_function("document.querySelector('#statusMsg').textContent.startsWith('Ready')", timeout=60000)
-            variants = [('verbose', {'logLevel': 'verbose', 'debug': True, 'threads': 1}),
-                        ('app defaults', {}),
-                        ('no arena', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
-                        ('no arena, basic opt', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False, 'graphOptimizationLevel': 'basic'}}),
-                        ('1 thread, no arena', {'threads': 1, 'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}),
-                        ('plain wasm runtime', {'session': {'enableCpuMemArena': False, 'enableMemPattern': False}, 'runtime': 'ort.min.js'})]
-            if os.path.exists(os.path.join(HERE, 'ai', 'models', 'htdemucs32.onnx')):
-                variants.append(('fp32 model, no arena', {'model': 'htdemucs32.onnx', 'session': {'enableCpuMemArena': False, 'enableMemPattern': False}}))
-            for name, dbg in variants:
-                logs.clear()
-                r = await pg.evaluate(PROBE, dbg)
-                line = f"{name}: {r.get('type')} {r.get('ep','')} threads={r.get('threads','')} chunk={round(r.get('chunkMs') or 0)}ms total={r['totalMs']}ms {r.get('error','')} | logs: {' / '.join(l for l in logs if 'Rush' not in l)[-1800:]}"
-                print(line); print('::notice title=AI variant::' + line)
+            r = await pg.evaluate(PROBE, {})
+            line = f"init: {r.get('type')} {r.get('ep','')} threads={r.get('threads','')} first window {round(r.get('chunkMs') or 0)} ms {r.get('error','')} | logs: {' / '.join(logs)[-600:]}"
+            print(line); print('::notice title=AI variant::' + line)
+            if r.get('type') == 'ready':
+                r = await pg.evaluate("""(async()=>{
+                  const ok = await AI.ready(); if (!ok) return { err: AI.describe() };
+                  const dec = async (u) => Engine.ensure(false).decodeAudioData(await (await fetch(u)).arrayBuffer());
+                  const mix = await dec('ci/mix.wav'), drums = await dec('ci/drums.wav'), bass = await dec('ci/bass.wav');
+                  const A = addAsset('ci mix', mix, { bpm: 120, beats: 48 });
+                  const t0 = performance.now(); await separateAsset(A); const ms = performance.now() - t0;
+                  const sdr = (est, ref) => { let s = 0, e = 0; for (let c = 0; c < 2; c++) { const x = est.getChannelData(c), y = ref.getChannelData(c); for (let i = 0; i < y.length; i++) { s += y[i] * y[i]; e += (y[i] - x[i]) ** 2; } } return 10 * Math.log10(s / (e + 1e-12)); };
+                  return { engine: A.stems.engine, ms, dur: mix.duration, drums: sdr(A.stems.buffers.drums, drums), bass: sdr(A.stems.buffers.bass, bass), desc: AI.describe() };
+                })()""")
+                msg = json.dumps(r) if 'err' in r else f"{r['desc']}: {r['dur']:.0f} s song separated in {r['ms']/1000:.1f} s ({r['dur']/(r['ms']/1000):.2f}x real-time), engine {r['engine']}, SDR drums {r['drums']:.1f} dB, bass {r['bass']:.1f} dB"
+                print(msg); print('::notice title=AI stems in browser::' + msg)
             await b.close()
     finally:
         srv.terminate()

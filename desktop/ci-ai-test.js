@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path');
 const ort = require(process.argv[2] || 'onnxruntime-node');
 const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8');
 global.self = {};                       // worker.js expects a worker global
-eval(src('aiworker.js') + '\n;global.separateCore = separateCore;');
+eval(src('aiworker.js') + '\n;global.separateCore = separateCore; global.HTD = HTD;');
 eval(src('fft.js') + '\n' + src('worker.js').replace(/self\.onmessage[\s\S]*$/, '') + '\n;global.dspSeparate = separate;');
 
 const sr = 44100, secs = 24, n = sr * secs, bpm = 120, beat = 60 / bpm;
@@ -55,7 +55,15 @@ const sdr = (est, ref) => { let s = 0, e = 0; for (let c = 0; c < 2; c++) for (l
   const inName = session.inputNames[0], outName = session.outputNames[0];
   const load = Date.now() - t0;
   let runs = 0, runMs = 0;
-  const run = async (x) => { const a = Date.now(); const r = await session.run({ [inName]: new ort.Tensor('float32', x, [1, 2, manifest.segment]) }); runs++; runMs += Date.now() - a; return r[outName].data; };
+  const run = async (x) => {
+    const a = Date.now(); let y;
+    if (manifest.format === 'htdemucs-fwd') {
+      const pre = HTD.htdemucsPreForward(x);
+      const r = await session.run({ x: new ort.Tensor('float32', pre.spectrogram, HTD.SPECTROGRAM_SHAPE), xt: new ort.Tensor('float32', pre.waveform, HTD.WAVEFORM_SHAPE) });
+      y = HTD.htdemucsPostForward(r.x_out.data, r.xt_out.data, pre.spectrogramStats, pre.waveformStats);
+    } else y = (await session.run({ [inName]: new ort.Tensor('float32', x, [1, 2, manifest.segment]) }))[outName].data;
+    runs++; runMs += Date.now() - a; return y;
+  };
   const got = { drums: mk(), bass: mk(), other: mk(), vocals: mk() };
   await separateCore({ L: mixL, R: mixR, seg: manifest.segment, nStems: 4, run, focus: () => 0,
     onRegion: (a, b, data) => manifest.stems.forEach((k, s) => { got[k][0].set(data[s * 2], a); got[k][1].set(data[s * 2 + 1], a); }) });

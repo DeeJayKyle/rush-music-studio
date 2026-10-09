@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Downloads the AI stem separator for the desktop build:
 #  - ONNX Runtime Web (MIT, Microsoft), pinned to the build Rush is tested with
-#  - HTDemucs v4 (MIT, Meta AI) as a single-file ONNX export (fp16 weights)
+#  - HTDemucs v4 (MIT, Meta AI), forward-only ONNX export for ONNX Runtime Web (MIT)
 # A failed download leaves the app on its fast built-in separator; it never breaks the build.
 set -u
 cd "$(dirname "$0")"
@@ -22,19 +22,20 @@ if [ $ok = 0 ]; then   # fall back to git
   fi
   rm -rf ortsrc ort.log
 fi
-MODEL_URL=https://huggingface.co/adowu/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx
-if [ $ok = 1 ] && curl -fsSL --retry 5 --retry-delay 10 -o ai/models/htdemucs.onnx "$MODEL_URL"; then
-  size=$(wc -c < ai/models/htdemucs.onnx)
+# HTDemucs v4, forward-only export made for ONNX Runtime Web (spectrogram and its inverse run in Rush's own code)
+HF=https://huggingface.co/webnn/stem-separator/resolve/main/onnx
+if [ $ok = 1 ] && curl -fsSL --retry 5 --retry-delay 10 -o ai/models/htdemucs_fwd.onnx "$HF/htdemucs_fwd.onnx" && curl -fsSL --retry 5 --retry-delay 10 -o ai/models/htdemucs_fwd.onnx.data "$HF/htdemucs_fwd.onnx.data"; then
+  size=$(wc -c < ai/models/htdemucs_fwd.onnx.data)
   if [ "$size" -lt 100000000 ]; then echo "::warning title=AI stems::Model download looks truncated ($size bytes)"; ok=0; fi
 else
   echo "::warning title=AI stems::Could not download the HTDemucs model"; ok=0
 fi
 if [ $ok = 1 ]; then
   cat > ai/models/manifest.json <<JSON
-{ "model": "htdemucs.onnx", "name": "HTDemucs v4", "sampleRate": 44100, "segment": 343980, "stems": ["drums", "bass", "other", "vocals"], "runtime": "ort.all.min.js" }
+{ "model": "htdemucs_fwd.onnx", "externalData": "htdemucs_fwd.onnx.data", "format": "htdemucs-fwd", "name": "HTDemucs v4", "sampleRate": 44100, "segment": 343980, "stems": ["drums", "bass", "other", "vocals"], "runtime": "ort.all.min.js" }
 JSON
   cp ../THIRD_PARTY.md ai/ 2>/dev/null || true
-  echo "::notice title=AI stems::Bundled HTDemucs ($(du -h ai/models/htdemucs.onnx | cut -f1)) and ONNX Runtime Web"
+  echo "::notice title=AI stems::Bundled HTDemucs ($(du -h ai/models/htdemucs_fwd.onnx.data | cut -f1)) and ONNX Runtime Web"
 else
   rm -rf ai && mkdir -p ai
 fi
