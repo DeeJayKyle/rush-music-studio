@@ -1,10 +1,11 @@
 // Rush Music Studio — desktop shell (Electron). Everything runs locally; no network access is used.
 // The app is served from a private rush:// scheme with cross-origin isolation, which unlocks
 // multi-threaded WebAssembly and WebGPU for the AI stem separator.
-const { app, BrowserWindow, Menu, session, protocol, net, ipcMain, utilityProcess, MessageChannelMain } = require('electron');
+const { app, BrowserWindow, Menu, session, protocol, net, ipcMain, MessageChannelMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
+const { fork } = require('child_process');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'rush', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, codeCache: true } }]);
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
@@ -69,19 +70,26 @@ app.whenReady().then(() => {
   const allowed = ['media', 'audioCapture', 'fileSystem'];
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.includes(perm)));
   session.defaultSession.webRequest.onBeforeRequest((d, cb) => cb({ cancel: /^https?:/i.test(d.url) }));
-  // native AI separator in its own process; each page gets a private message channel to it
-  let aiProc = null;
+  // native AI separator in its own Node process (the Electron binary run as Node);
+  // each page gets a private message channel to it, bridged here
+  let aiProc = null, chanSeq = 0;
+  const chans = new Map();
   ipcMain.on('rush-ai-port', (e) => {
     if (!fs.existsSync(path.join(aiDir, 'models', 'manifest.json'))) return;
     if (!aiProc) {
-      aiProc = utilityProcess.fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { serviceName: 'Rush AI stem separator', stdio: 'pipe' });
-      for (const s of [aiProc.stdout, aiProc.stderr]) if (s) s.on('data', (d) => console.log('RUSH_AI_LOG ' + String(d).trim().slice(0, 500)));
-      aiProc.on('exit', () => { aiProc = null; });
+      aiProc = fork(path.join(__dirname, 'ai-native.js'), [appDir, aiDir], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, serialization: 'advanced', stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      for (const st of [aiProc.stdout, aiProc.stderr]) st.on('data', (d) => console.log('RUSH_AI_LOG ' + String(d).trim().slice(0, 500)));
+      aiProc.on('message', ({ ch, m }) => { const p = chans.get(ch); if (p) p.postMessage(m); });
+      aiProc.on('exit', (code) => { console.log('RUSH_AI_LOG separator exited ' + code); aiProc = null; for (const p of chans.values()) p.postMessage({ type: 'failed', error: 'native separator stopped' }); chans.clear(); });
     }
-    const { port1, port2 } = new MessageChannelMain();
-    aiProc.postMessage({ type: 'port' }, [port1]); console.log('RUSH_AI_LOG port sent');
+    const { port1, port2 } = new MessageChannelMain(), ch = ++chanSeq;
+    chans.set(ch, port1);
+    port1.on('message', (ev) => { if (aiProc) aiProc.send({ ch, m: ev.data }); });
+    port1.on('close', () => chans.delete(ch));
+    port1.start();
     e.sender.postMessage('rush-ai-port', null, [port2]);
   });
+  app.on('before-quit', () => { if (aiProc) aiProc.kill(); });
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());

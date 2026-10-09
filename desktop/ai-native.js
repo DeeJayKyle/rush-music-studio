@@ -67,4 +67,13 @@ function serve(port) {
   });
   port.start();
 }
-process.parentPort.on('message', (e) => { if (e.data && e.data.type === 'port' && e.ports[0]) serve(e.ports[0]); });
+if (process.parentPort) {            // Electron utility process
+  process.parentPort.on('message', (e) => { if (e.data && e.data.type === 'port' && e.ports[0]) serve(e.ports[0]); });
+} else {                              // Node child process (ELECTRON_RUN_AS_NODE): channels multiplexed over IPC
+  const chans = new Map();
+  process.on('message', ({ ch, m }) => {
+    let c = chans.get(ch);
+    if (!c) { c = { h: null, on: (ev, h) => { c.h = h; }, start() {}, postMessage: (msg) => process.send({ ch, m: msg }) }; chans.set(ch, c); serve(c); }
+    c.h && c.h({ data: m });
+  });
+}
